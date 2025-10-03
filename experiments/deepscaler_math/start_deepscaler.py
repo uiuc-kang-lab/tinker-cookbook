@@ -12,6 +12,7 @@ from datasets import Dataset, load_dataset
 import math
 from functools import partial
 
+
 @chz.chz
 class Config:
     data_path: str = "/data/tinker"
@@ -24,7 +25,7 @@ class Config:
     lora_rank: int = 32
     max_tokens: int = 3072
     use_kl: bool = True
-    kl_penalty_coef: float = 0.003
+    kl_penalty_coef: float = 0
     kl_discount_factor: float = 0
     num_substeps: int = 1
     wandb_project: str = "tinker-deepscaler"
@@ -32,6 +33,7 @@ class Config:
     remove_constant_reward_groups: bool = False
     eval_interval: int = 10
     save_interval: int = 10
+    add_noise: bool = False
 
 
 
@@ -50,8 +52,6 @@ class DeepScalerDataset(RLDataset):
         self.ds = cast(Dataset, load_dataset("parquet", data_files=data_path, keep_in_memory=True)["train"])
         if split == "train":
             self.ds = self.ds.shuffle(seed=0)
-        if split == "test":
-            self.ds = self.ds.select(range(64))
         # select the first 100 data
 
         self.batch_size = batch_size
@@ -82,6 +82,7 @@ class DeepScalerDataset(RLDataset):
         # Extract problem and answer from the dataset
         problem = x["prompt"][0]["content"]
         answer = x["reward_spec"]["ground_truth"]
+        dataset_name=x["data_source"]
         if not (problem and answer):
             return None
         return ProblemGroupBuilder(
@@ -89,7 +90,7 @@ class DeepScalerDataset(RLDataset):
                 MathEnv, problem, answer, self.renderer, convo_prefix=self.convo_prefix
             ),
             num_envs=group_size,
-            dataset_name="deepscaler",
+            dataset_name=dataset_name,
         )
 
 @chz.chz
@@ -100,6 +101,7 @@ class DeepScalerDatasetBuilder(RLDatasetBuilder):
     group_size: int
     convo_prefix: list[renderers.Message] | None | Literal["standard"] = "standard"
     data_path: str
+    add_noise: bool
 
     async def __call__(self) -> tuple[DeepScalerDataset, DeepScalerDataset]:
         if self.convo_prefix == "standard":
@@ -108,21 +110,24 @@ class DeepScalerDatasetBuilder(RLDatasetBuilder):
             convo_prefix = self.convo_prefix
         tokenizer = get_tokenizer(self.model_name_for_tokenizer)
         renderer = renderers.get_renderer(self.renderer_name, tokenizer=tokenizer)
+        train_dataset_name = "deepscaler_train.parquet" if not self.add_noise else "deepscaler_train_with_wrong_answers.parquet"
+        test_dataset_name = "deepscaler_test.parquet"
         train_dataset = DeepScalerDataset(
                 batch_size=self.batch_size,
                 group_size=self.group_size,
                 renderer=renderer,
                 convo_prefix=convo_prefix,
                 split="train",
-                data_path=f"{self.data_path}/deepscaler_train.parquet"
+                data_path=f"{self.data_path}/{train_dataset_name}"
             )
+        print(train_dataset.ds[1])
         test_dataset = DeepScalerDataset(
                 batch_size=self.batch_size,
                 group_size=self.group_size,
                 renderer=renderer,
                 convo_prefix=convo_prefix,
                 split="test",
-                data_path=f"{self.data_path}/deepscaler_test.parquet"
+                data_path=f"{self.data_path}/{test_dataset_name}"
             )
         return (train_dataset, test_dataset)
 
@@ -133,10 +138,11 @@ def main(config: Config):
         dataset_builder=DeepScalerDatasetBuilder(
             batch_size=64, 
             model_name_for_tokenizer=config.model_name, 
-            renderer_name=model_info.get_recommended_renderer_name(config.model_name), 
+            renderer_name="qwen3_disable_thinking", 
             group_size=config.group_size, 
             convo_prefix=None,
-            data_path=config.data_path
+            data_path=config.data_path,
+            add_noise=config.add_noise
         ),
         model_name=config.model_name,
         max_tokens=config.max_tokens,

@@ -26,8 +26,9 @@ class MathEnv(ProblemEnv):
         convo_prefix: list[renderers.Message] | None = None,
         grader: Literal["sympy", "math_verify"] = "sympy",
         timeout: float = 1.0,
+        format_coef: float = 0
     ):
-        super().__init__(renderer, convo_prefix)
+        super().__init__(renderer, convo_prefix, format_coef)
         self.problem = problem
         self.answer = answer
         self.grader = grader
@@ -35,7 +36,7 @@ class MathEnv(ProblemEnv):
 
     @classmethod
     def question_suffix(cls) -> str:
-        return " Write your answer in \\boxed{} format."
+        return ""
 
     def get_question(self) -> str:
         return self.problem + self.question_suffix()

@@ -94,8 +94,8 @@ def print_group(traj_group: TrajectoryGroup, tokenizer: Tokenizer):
                     bprint(f"  Step {i}:")
                     for key, value in metrics.items():
                         bprint(f"    {key}: {value}")
-        bprint("---- datum ----")
-        bprint(colorize_example(datum, tokenizer, key="advantages"))
+        # bprint("---- datum ----")
+        # bprint(colorize_example(datum, tokenizer, key="advantages"))
         last_metadata = metadata
     bprint("====== End Trajectory Group ======")
     logger.info(buf.getvalue().rstrip())
@@ -884,6 +884,8 @@ async def main(
     evaluators = [evaluator() for evaluator in cfg.evaluator_builders]
     if maybe_test_dataset is not None:
         evaluators.append(RLTestSetEvaluator(maybe_test_dataset, max_tokens=cfg.max_tokens))
+        num_test_data = len(maybe_test_dataset)
+        logger.info(f"Will test on {num_test_data} data")
 
     num_batches = len(dataset)
     logger.info(f"Will train on {num_batches} batches")

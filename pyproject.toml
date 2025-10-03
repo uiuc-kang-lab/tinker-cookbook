@@ -24,6 +24,8 @@ dependencies = [
     "textarena",
     "math-verify",
     "scipy",
+    "wandb>=0.22.1",
+    "func-timeout>=4.3.5",
 ]
 
 [project.urls]
