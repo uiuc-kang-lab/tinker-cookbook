@@ -13,18 +13,22 @@ class CLIConfig:
     renderer_name: str = "qwen3"
     group_size: int = 8
     batch_size: int = 64
-    learning_rate: float = 1e-6
+    learning_rate: float = 5e-5
     max_tokens: int = 3000
-    eval_every: int = 5
+    eval_every: int = 10
     save_every: int = 20
-    wandb_project: str | None = None
+    wandb_project: str | None = "tinker-sql"
     wandb_name: str | None = None
     log_path: str | None = None
+    data_path: str | None = None
+    db_path: str | None = None
+    add_noise: bool = False
+    timeout: int = 30
+    n_epochs: int = 1
 
 
 def build_config(cli_config: CLIConfig) -> train.Config:
     model_name = cli_config.model_name
-    renderer_name = cli_config.renderer_name
 
     date_and_time = datetime.now().strftime("%Y-%m-%d-%H-%M")
     run_name = f"{model_name}-{cli_config.group_size}group-{cli_config.batch_size}batch-{cli_config.learning_rate}lr-{date_and_time}"
@@ -32,7 +36,7 @@ def build_config(cli_config: CLIConfig) -> train.Config:
     if cli_config.log_path is not None:
         log_path = cli_config.log_path
     else:
-        log_path = f"/data/daniel_kang_group/rl_noise/tinker/{run_name}"
+        log_path = f"/mydata/tinker/{run_name}"
 
     if cli_config.wandb_name is not None:
         wandb_name = cli_config.wandb_name
@@ -44,9 +48,10 @@ def build_config(cli_config: CLIConfig) -> train.Config:
         renderer_name=cli_config.renderer_name,
         train_group_size=cli_config.group_size,
         model_name=cli_config.model_name,
-        data_path="/data/daniel_kang_group/rl_noise/data/bird/",
-        db_path="/data/daniel_kang_group/rl_noise/data/bird/databases",
-        timeout=30
+        data_path=cli_config.data_path,
+        db_path=cli_config.db_path,
+        timeout=cli_config.timeout,
+        add_noise=cli_config.add_noise
     )
 
     return train.Config(
@@ -58,6 +63,7 @@ def build_config(cli_config: CLIConfig) -> train.Config:
         eval_every=cli_config.eval_every,
         wandb_project=cli_config.wandb_project,
         wandb_name=wandb_name,
+        n_epochs=cli_config.n_epochs
     )
 
 

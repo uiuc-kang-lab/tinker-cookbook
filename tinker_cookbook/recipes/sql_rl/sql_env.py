@@ -16,6 +16,8 @@ from tinker_cookbook.rl.types import (
     RLDataset,
     RLDatasetBuilder,
     StepResult,
+    Trajectory,
+    Metrics
 )
 from tinker_cookbook.tokenizer_utils import get_tokenizer
 from tinker_cookbook.recipes.sql_rl.sql_utils import verify_format_and_extract, execute_sql_wrapper_single
@@ -89,15 +91,6 @@ class SQLEnv(Env):
     async def initial_observation(self) -> tuple[ModelInput, StopCondition]:
         return self._obs, self.stop_condition
 
-    def _validate_action(self, action: str):
-        stop_tags = ["</sql>", "</solution>"]
-        for tag in stop_tags:
-            if tag in action:
-                assert action.split(tag, 1)[1] == "", (
-                    f"{tag} detected in the response but it is not the last string generated. "
-                    f"Use {stop_tags} as stop strings in the configuration."
-                )
-
     def _parse_action(self, action: str) -> Tuple[str, str, Any]:
         """
         Parse action string to return tool name and corresponding arguments.
@@ -106,29 +99,22 @@ class SQLEnv(Env):
         """
         match = re.search(r"<sql>(.*?)</sql>", action, re.DOTALL)
         tool_input = match.group(1) if match else None
-        # NOTE: hard code
-        # NOTE (shu): in the future imagine can use different tools here
-        # Format <tool>tool_name</tool><input>tool_input</input>
-        tool_group_name = self.tool_group.get_name()
-        tool_name = self.tool_group.get_tool_names()[0]
-        return tool_group_name, tool_name, (self.db_id, tool_input)
+        return tool_input
 
     def _get_user_turn(self, action_text: str) -> tuple[Message, float]:
 
         # check if there is a sql tool call
-        self._validate_action(action_text)
-        if "</sql>" in action_text:
+        if action_text.endswith('</sql>'):
             # this means this turn is an intermediate step
-            _, _, sql_input = self._parse_action(action_text)
-            _, sql = sql_input
-            print(f"Executing SQL: {sql}")
+            sql = self._parse_action(action_text)
+            # print(f"Executing SQL: {sql}")
             sql_output = execute_sql_wrapper_single(self.db_file, sql, self.timeout, action_text)
-            _, _, res, error, _ = sql_output
+            _, _, pred_results, error, _ = sql_output
             
 
-            if res is None:
+            if pred_results is None:
                 print(f"SQL execution error: {error}")
-                return Message(role="user", content=error), 0
+                return Message(role="user", content=error), 0.0
             else:
                 df = pd.DataFrame(pred_results)
                 res = df.to_string(index=False)
@@ -141,16 +127,16 @@ class SQLEnv(Env):
                 else:
                     res = "SQL execution results: " + res
 
-                print(f"SQL output: {res}")
+                # print(f"SQL output: {res}")
                 response = f"{res}\nYou have {MAX_TURNS - self.num_turn} turns left to complete the task."
 
-                return Message(role="user", content=response), 0
+                return Message(role="user", content=response), 0.0
         else:
             # no sql tool call means this is a final step
             is_valid, _, pred_sql, _ = verify_format_and_extract(action_text)
 
             if not is_valid:
-                return Message(role="user", content="Your previous action is invalid. Follow the format of outputting thinking process and sql tool, and try again."), -1
+                return Message(role="user", content="Your previous action is invalid. Follow the format of outputting thinking process and sql tool, and try again."), -1.0
 
 
             pred = execute_sql_wrapper_single(self.db_file, pred_sql, self.timeout, action_text)
@@ -160,16 +146,16 @@ class SQLEnv(Env):
             _, _, gt_results, _, _ = ref
 
             if pred_results is None:
-                return None, 0
+                return None, 0.0
             else:
                 if pred_results == gt_results:
                     return None, 1.0
                 else:
-                    return None, 0
+                    return None, 0.0
 
 
     def _is_done(self, action: str) -> bool:
-        if (len(self.turns) - len(convo_prefix)) // 2 >= MAX_TURNS:
+        if self.num_turn == MAX_TURNS:
             return True
         return "<solution>" in action and "</solution>" in action
 
@@ -180,22 +166,23 @@ class SQLEnv(Env):
         # step 1: parse the action tokens into a message
         # this step is specific to our library, but usually templated, so you can just copy it.
         (action_message, _parse_success) = self.renderer.parse_response(action)
-        print("=" * 100)
-        print(f"Action: {action_message['content']}")
+        # print("=" * 100)
+        # print(f"Action: {action_message['content']}")
 
         # step 2: based on the string answer, we compute the reward and the user turn.
         # This part is NOT templated, so you need to implement it. But it is plain python without using special libraries.
         user_turn, reward = self._get_user_turn(action_message["content"])
-        print(f"Next user turn: {user_turn}")
-        print(f"Current reward: {reward}")
-        print(f"Is done: {self._is_done(action_message['content'])}")
-        print("=" * 100)
+        # print(f"Next user turn: {user_turn}")
+        # print(f"Current reward: {reward}")
+        # print(f"Is done: {self._is_done(action_message['content'])}")
+        # print(f"number of turns left: {MAX_TURNS - self.num_turn}")
+        # print("=" * 100)
 
         # step 3: update the conversation history
         self.turns.append({"role": "assistant", "content": action_message["content"]})
         if user_turn is not None:
             self.turns.append(user_turn)
-        episode_done = self._is_done
+        episode_done = self._is_done(action_message['content'])
 
         # step 4: return the step result
         step_result = StepResult(
@@ -206,7 +193,6 @@ class SQLEnv(Env):
         )
 
         return step_result
-
 
 class BIRDDataset(RLDataset):
     def __init__(
@@ -222,9 +208,10 @@ class BIRDDataset(RLDataset):
         if split not in ("train", "test"):
             raise ValueError("split must be 'train' or 'test'")
         self.ds = cast(Dataset, load_dataset("parquet", data_files=data_path, keep_in_memory=True)["train"])
+        # print two examples
         if split == "train":
+            print("data_path")
             self.ds = self.ds.shuffle(seed=0)
-
         self.batch_size = batch_size
         self.group_size = group_size if split == "train" else 1
         self.renderer = renderer
@@ -278,11 +265,12 @@ class BIRDDatasetBuilder(RLDatasetBuilder):
     data_path: str
     db_path: str
     timeout: int = 60
+    add_noise: bool = False
 
     async def __call__(self) -> tuple[RLDataset, RLDataset]:
         sql_renderer = get_renderer(self.renderer_name, get_tokenizer(self.model_name))
-        train_data_path = f"{self.data_path}/clean_train.parquet"
-        test_data_path = f"{self.data_path}/noisy_train.parquet"
+        train_data_path = f"{self.data_path}/clean_train.parquet" if not self.add_noise else f"{self.data_path}/noisy_train.parquet"
+        test_data_path = f"{self.data_path}/combined_test.parquet"
         training_dataset = BIRDDataset(
             batch_size=self.batch_size,
             group_size=self.train_group_size,

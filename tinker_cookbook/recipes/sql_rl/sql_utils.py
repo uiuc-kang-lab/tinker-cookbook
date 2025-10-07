@@ -19,9 +19,9 @@ OBS_START, OBS_END = "<observation>", "</observation>"
 
 # NOTE: bring back reward
 def verify_format_and_extract(output: str):
-    if output.count(SOLUTION_START) != 1:
-        return False, None, None, None
-    pre_solution, tail = output.split(SOLUTION_START, 1)
+    # if output.count(SOLUTION_START) != 1:
+    #     return False, None, None, None
+    tail = output.split(SOLUTION_START, 1)[-1]
 
     if tail.count(SOLUTION_END) != 1:
         return False, None, None, None
@@ -31,16 +31,16 @@ def verify_format_and_extract(output: str):
     if re.search(r"</?(think|sql|observation)\b", solution_text, re.I):
         return False, None, None, None
 
-    thoughts = re.findall(r"<think>(.*?)</think>", output, re.S)
-    if not thoughts:
-        return False, None, None, None
+    # thoughts = re.findall(r"<think>(.*?)</think>", output, re.S)
+    # if not thoughts:
+    #     return False, None, None, None
 
     # for m in re.finditer(r"</observation>", pre_solution, re.I):
     #     rest = pre_solution[m.end() :].lstrip()
     #     if not rest.lower().startswith(THINK_START):
     #         return False, None, None, None
 
-    return True, thoughts, solution_text.strip(), None
+    return True, None, solution_text.strip(), None
 
 
 def execute_sql_single(db_file, sql):
@@ -55,10 +55,10 @@ def execute_sql_single(db_file, sql):
         # print('Successfully executed')
         return db_file, sql, execution_res, 1
     except Exception as e:
-        print(f"Error executing SQL: {e}, db file: {db_file}")
+        print(f"Error executing SQL: {e}, db file: {db_file}, SQL: {sql}")
         conn.rollback()
         conn.close()
-        return db_file, sql, None, 0
+        return db_file, sql, None, f"Error executing SQL: {e}, db file: {db_file}, SQL: {sql}"
 
 
 def execute_sql_wrapper_single(db_file, sql, timeout, output_str):
@@ -71,7 +71,7 @@ def execute_sql_wrapper_single(db_file, sql, timeout, output_str):
         print("-" * 30)
         res = (db_file, sql, None, f"SQL:\n{sql}\nTime Out!")
     except Exception as e:
-        print(f"Error executing SQL: {e}, db_file: {db_file}")
+        print(f"Error executing SQL: {e}, db_file: {db_file}, SQL: {sql}")
         res = (db_file, sql, None, f"Error executing SQL: {e}, db_file: {db_file}")
 
     # Append the output to the tuple

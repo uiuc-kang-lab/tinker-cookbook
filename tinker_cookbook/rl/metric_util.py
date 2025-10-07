@@ -78,6 +78,9 @@ def _compute_trajectory_metrics(trajectory_groups_P: List[TrajectoryGroup]) -> D
     metrics["reward/total"] = np.mean(
         [reward for tg in trajectory_groups_P for reward in tg.get_total_rewards()]
     ).item()
+    metrics["correct"] = np.mean(
+        [int(traj.transitions[-1].reward == 1) for tg in trajectory_groups_P for traj in tg.trajectories_G]
+    )
     # Per-transition metrics
     transition_metrics = [
         transition.metrics

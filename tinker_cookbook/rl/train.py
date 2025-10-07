@@ -193,6 +193,7 @@ class Config:
     compute_post_kl: bool = False
     evaluator_builders: list[SamplingClientEvaluatorBuilder] = chz.field(default_factory=list)
     lora_rank: int = 32
+    n_epochs: int = 1
 
     kl_penalty_coef: float = 0.0
     kl_discount_factor: float = 0.0
@@ -796,52 +797,54 @@ async def do_sync_training(
     sampling_client, _ = await save_checkpoint_and_get_sampling_client(
         cfg, training_client, start_batch
     )
+    
+    for _ in range(cfg.n_epochs):
+        for i_batch in range(start_batch, end_batch):
+            metrics = {
+                "progress/batch": i_batch,
+                "optim/lr": cfg.learning_rate,
+                "progress/done_frac": (i_batch + 1) / num_batches / cfg.n_epochs,
+            }
+            t_start = time.time()
 
-    for i_batch in range(start_batch, end_batch):
-        metrics = {
-            "progress/batch": i_batch,
-            "optim/lr": cfg.learning_rate,
-            "progress/done_frac": (i_batch + 1) / num_batches,
-        }
-        t_start = time.time()
+            # Run evaluations
+            if cfg.eval_every > 0 and i_batch % cfg.eval_every == 0:
+                with timed("run_evals", metrics):
+                    for evaluator in evaluators:
+                        eval_metrics = await evaluator(sampling_client)
+                        metrics.update({f"test/{k}": v for k, v in eval_metrics.items()})
+                print(f"eval metric: {metrics}")
 
-        # Run evaluations
-        if cfg.eval_every > 0 and i_batch % cfg.eval_every == 0:
-            with timed("run_evals", metrics):
-                for evaluator in evaluators:
-                    eval_metrics = await evaluator(sampling_client)
-                    metrics.update({f"test/{k}": v for k, v in eval_metrics.items()})
+            # Get batch and sample trajectories
+            env_group_builders_P = dataset.get_batch(i_batch)
+            with timed("sample", metrics):
+                trajectory_groups_P = await asyncio.gather(
+                    *[
+                        do_group_rollout_and_filter_constant_reward(cfg, sampling_client, builder)
+                        for builder in env_group_builders_P
+                    ]
+                )
+            trajectory_groups_P = [
+                trajectory_group
+                for trajectory_group in trajectory_groups_P
+                if trajectory_group is not None
+            ]
 
-        # Get batch and sample trajectories
-        env_group_builders_P = dataset.get_batch(i_batch)
-        with timed("sample", metrics):
-            trajectory_groups_P = await asyncio.gather(
-                *[
-                    do_group_rollout_and_filter_constant_reward(cfg, sampling_client, builder)
-                    for builder in env_group_builders_P
-                ]
+            # Train step
+            sampling_client, train_step_metrics = await do_train_step_and_get_sampling_client(
+                cfg,
+                i_batch,
+                training_client,
+                service_client,
+                tokenizer,
+                env_group_builders_P,
+                trajectory_groups_P,
             )
-        trajectory_groups_P = [
-            trajectory_group
-            for trajectory_group in trajectory_groups_P
-            if trajectory_group is not None
-        ]
 
-        # Train step
-        sampling_client, train_step_metrics = await do_train_step_and_get_sampling_client(
-            cfg,
-            i_batch,
-            training_client,
-            service_client,
-            tokenizer,
-            env_group_builders_P,
-            trajectory_groups_P,
-        )
-
-        # Log metrics
-        metrics.update(train_step_metrics)
-        metrics["time/total"] = time.time() - t_start
-        ml_logger.log_metrics(metrics, step=i_batch)
+            # Log metrics
+            metrics.update(train_step_metrics)
+            metrics["time/total"] = time.time() - t_start
+            ml_logger.log_metrics(metrics, step=i_batch)
 
 
 async def main(
