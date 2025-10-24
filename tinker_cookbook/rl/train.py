@@ -14,6 +14,7 @@ import chz
 import numpy as np
 import tinker
 import torch
+import random
 from tinker_cookbook import checkpoint_utils
 from tinker_cookbook.completers import TinkerTokenCompleter
 from tinker_cookbook.display import colorize_example
@@ -553,12 +554,17 @@ async def save_checkpoint_and_get_sampling_client(
     cfg: Config,
     training_client: tinker.TrainingClient,
     i_batch: int,
+    i_epoch: int = 0,
+    is_init: bool = False
 ) -> tuple[tinker.SamplingClient, dict[str, Any]]:
     metrics = {}
+    name = f"epoch{i_epoch:02d}_batch{i_batch:06d}"
+    if is_init:
+        name = name + "_" + str(random.random())
     with timed("save_checkpoint", metrics):
         path_dict = await checkpoint_utils.save_checkpoint_async(
             training_client=training_client,
-            name=f"{i_batch:06d}",
+            name=name,
             log_path=cfg.log_path,
             loop_state={"batch": i_batch},
             kind="both" if (i_batch > 0 and i_batch % cfg.save_every == 0) else "sampler",
@@ -608,6 +614,7 @@ async def compute_full_batch_metrics_and_get_sampling_client(
     cfg: Config,
     training_client: tinker.TrainingClient,
     i_batch: int,
+    i_epoch: int,
     data_D: list[tinker.Datum],
     training_logprobs_D: list[torch.Tensor],
 ) -> tuple[tinker.SamplingClient, dict[str, Any]]:
@@ -624,7 +631,7 @@ async def compute_full_batch_metrics_and_get_sampling_client(
 
     # Get a sampling client using the new weights
     sampling_client, checkpoint_metrics = await save_checkpoint_and_get_sampling_client(
-        cfg, training_client, i_batch
+        cfg, training_client, i_batch, i_epoch
     )
     metrics.update(checkpoint_metrics)
 
@@ -742,6 +749,7 @@ async def do_train_step_streaming_and_get_sampling_client(
 async def do_train_step_and_get_sampling_client(
     cfg: Config,
     i_batch: int,
+    i_epoch: int,
     training_client: tinker.TrainingClient,
     service_client: tinker.ServiceClient,
     tokenizer: Tokenizer,
@@ -771,6 +779,7 @@ async def do_train_step_and_get_sampling_client(
         training_client,
         # NOTE: saving the checkpoint as the i + 1 step
         i_batch + 1,
+        i_epoch,
         data_D,
         training_logprobs_D,
     )
@@ -795,10 +804,10 @@ async def do_sync_training(
 
     # Initial sampling client
     sampling_client, _ = await save_checkpoint_and_get_sampling_client(
-        cfg, training_client, start_batch
+        cfg, training_client, start_batch, is_init=True
     )
     
-    for _ in range(cfg.n_epochs):
+    for i_epoch in range(cfg.n_epochs):
         for i_batch in range(start_batch, end_batch):
             metrics = {
                 "progress/batch": i_batch,
@@ -834,6 +843,7 @@ async def do_sync_training(
             sampling_client, train_step_metrics = await do_train_step_and_get_sampling_client(
                 cfg,
                 i_batch,
+                i_epoch,
                 training_client,
                 service_client,
                 tokenizer,

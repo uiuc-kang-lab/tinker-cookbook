@@ -8,8 +8,10 @@ SynSQL reward calculation.
 import re
 import sqlite3
 from func_timeout import func_timeout, FunctionTimedOut
-import sys
+import sys, os
 import random
+from tinker_cookbook.recipes.sql_rl.grader import grade
+from copy import deepcopy
 
 THINK_START, THINK_END = "<think>", "</think>"
 SQL_START, SQL_END = "<sql>", "</sql>"
@@ -42,14 +44,25 @@ def verify_format_and_extract(output: str):
 
     return True, None, solution_text.strip(), None
 
+def remove_null_rows(results):
+    return [row for row in results if not all(col is None for col in row)]
 
-def execute_sql_single(db_file, sql):
+def execute_sql_single(db_file, sql, db_modification_script):
     try:
-        conn = sqlite3.connect(db_file)
+        conn = sqlite3.connect(db_file, autocommit=False)
         cursor = conn.cursor()
-        conn.execute("BEGIN TRANSACTION;")
+        # if db_modification_script:
+        #     with open(db_modification_script, 'r') as f:
+        #         script = f.read()
+        #     # print(f"Executing DB modification script: {db_modification_script}")
+        #     try:
+        #         cursor.executescript(script)
+        #     except Exception as e:
+        #         print(f"WARNING executing DB modification script failed: {e}")
+        #     # print("DB modification script executed successfully.")
         cursor.execute(sql)
-        execution_res = frozenset(cursor.fetchall())
+        result = remove_null_rows(cursor.fetchall())
+        execution_res = deepcopy(result)
         conn.rollback()
         conn.close()
         # print('Successfully executed')
@@ -61,9 +74,9 @@ def execute_sql_single(db_file, sql):
         return db_file, sql, None, f"Error executing SQL: {e}, db file: {db_file}, SQL: {sql}"
 
 
-def execute_sql_wrapper_single(db_file, sql, timeout, output_str):
+def execute_sql_wrapper_single(db_file, sql, timeout, output_str, db_modification_script=None):
     try:
-        res = func_timeout(timeout, execute_sql_single, args=(db_file, sql))
+        res = func_timeout(timeout, execute_sql_single, args=(db_file, sql, db_modification_script))
     except KeyboardInterrupt:
         sys.exit(0)
     except FunctionTimedOut:
@@ -98,8 +111,13 @@ def calculate_reward_single(completion, reference, db_file, timeout=60):
     _, _, pred_results, _, _ = pred
     _, _, gt_results, _, _ = ref
 
-    if pred_results is not None and gt_results is not None and pred_results == gt_results:
-        reward = 1.0
+    if pred_results is not None and gt_results is not None:
+        is_correct, info = grade(list(gt_results), list(pred_results), grading_method="multiset")
+        if not is_correct:
+            print(f"Grading info: {info}")
+            reward = 0.0
+        if is_correct:
+            reward = 1.0
     else:
         reward = 0.0
     return reward

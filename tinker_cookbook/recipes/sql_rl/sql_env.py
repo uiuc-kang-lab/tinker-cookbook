@@ -21,13 +21,18 @@ from tinker_cookbook.rl.types import (
 )
 from tinker_cookbook.tokenizer_utils import get_tokenizer
 from tinker_cookbook.recipes.sql_rl.sql_utils import verify_format_and_extract, execute_sql_wrapper_single
+from tinker_cookbook.recipes.sql_rl.grader import grade
 from tinker_cookbook import renderers
 from tinker_cookbook.rl.problem_env import ProblemGroupBuilder
-from datasets import load_dataset, Dataset
+from datasets import load_dataset, Dataset, concatenate_datasets
 from typing import Literal, cast, Tuple, Any
 from functools import partial
 import math
 import re
+import os
+import logging
+
+logger = logging.getLogger(__name__)
 
 _UPPER_BOUND = 1024
 MAX_TURNS = 5
@@ -69,7 +74,7 @@ convo_prefix = [
 ]
 
 class SQLEnv(Env):
-    def __init__(self, question: str, gold_answer: int, renderer: Renderer, db_file, timeout):
+    def __init__(self, question_id: str, question: str, gold_answer: int, renderer: Renderer, db_file, timeout, db_modification_script: str | None, dump_path: str | None = None):
         self.renderer: Renderer = renderer
         self.turns: list[Message] = []
         self.gold_answer: int = gold_answer
@@ -77,6 +82,9 @@ class SQLEnv(Env):
         self.timeout = timeout
         self.num_turn = 0
         self.question = question
+        self.question_id = question_id
+        self.db_modification_script = db_modification_script
+        self.dump_path = dump_path
 
     @property
     def stop_condition(self) -> StopCondition:
@@ -101,14 +109,14 @@ class SQLEnv(Env):
         tool_input = match.group(1) if match else None
         return tool_input
 
-    def _get_user_turn(self, action_text: str) -> tuple[Message, float]:
+    def _get_user_turn(self, action_text: str) -> tuple[Message, float, str]:
 
         # check if there is a sql tool call
         if action_text.endswith('</sql>'):
             # this means this turn is an intermediate step
             sql = self._parse_action(action_text)
             # print(f"Executing SQL: {sql}")
-            sql_output = execute_sql_wrapper_single(self.db_file, sql, self.timeout, action_text)
+            sql_output = execute_sql_wrapper_single(self.db_file, sql, self.timeout, action_text, self.db_modification_script)
             _, _, pred_results, error, _ = sql_output
             
 
@@ -138,9 +146,12 @@ class SQLEnv(Env):
             if not is_valid:
                 return Message(role="user", content="Your previous action is invalid. Follow the format of outputting thinking process and sql tool, and try again."), -1.0
 
+            if self.dump_path is not None:
+                with open(os.path.join(self.dump_path, f"{self.question_id}_pred.sql"), "w") as f:
+                    f.write(pred_sql)
 
-            pred = execute_sql_wrapper_single(self.db_file, pred_sql, self.timeout, action_text)
-            ref = execute_sql_wrapper_single(self.db_file, self.gold_answer, self.timeout, action_text)
+            pred = execute_sql_wrapper_single(self.db_file, pred_sql, self.timeout, action_text, self.db_modification_script)
+            ref = execute_sql_wrapper_single(self.db_file, self.gold_answer, self.timeout, action_text, self.db_modification_script)
 
             _, _, pred_results, error, _ = pred
             _, _, gt_results, _, _ = ref
@@ -184,12 +195,18 @@ class SQLEnv(Env):
             self.turns.append(user_turn)
         episode_done = self._is_done(action_message['content'])
 
+
+        # if next_obs is longer than 32768, mark as done
+        if self._obs.length + 3072 > 32768:
+            episode_done = True
+            print("Observation too long, marking episode as done.")
+
         # step 4: return the step result
         step_result = StepResult(
             next_observation=self._obs,
             next_stop_condition=self.stop_condition,
             episode_done=episode_done,
-            reward=reward,
+            reward=reward
         )
 
         return step_result
@@ -202,21 +219,29 @@ class BIRDDataset(RLDataset):
         renderer: renderers.Renderer,
         data_path: str,
         db_path: str,
+        db_modification_script_path: str,
         timeout: int,
         split: Literal["train", "test"] = "train",
+        n_epochs: int = 1,
+        num_data: int = -1,
     ):
         if split not in ("train", "test"):
             raise ValueError("split must be 'train' or 'test'")
         self.ds = cast(Dataset, load_dataset("parquet", data_files=data_path, keep_in_memory=True)["train"])
         # print two examples
         if split == "train":
-            print("data_path")
             self.ds = self.ds.shuffle(seed=0)
+            if num_data > 0:
+                self.ds = self.ds.select(range(num_data))
+            if n_epochs > 1:
+                self.ds = concatenate_datasets([self.ds for _ in range(n_epochs)])
         self.batch_size = batch_size
         self.group_size = group_size if split == "train" else 1
         self.renderer = renderer
         self.db_path = db_path
         self.timeout = timeout
+        self.db_modification_script_path = db_modification_script_path
+        self.dump_path = None
 
     @classmethod
     def question_suffix(cls) -> str:
@@ -235,20 +260,28 @@ class BIRDDataset(RLDataset):
     def __len__(self) -> int:
         return math.ceil(len(self.ds) / self.batch_size)
 
+    def set_dump_path(self, dump_path: str) -> None:
+        self.dump_path = dump_path
+
     def _make_env_group_builder(
         self, x: dict[str, str], group_size: int
     ) -> ProblemGroupBuilder | None:
         # Extract problem and answer from the dataset
+        problem_id = f"{x['data_source']}_{x['question_id']}"
         problem = x["prompt"][1]["content"]
         answer = x["reward_spec"]["ground_truth"]
         dataset_name = x["data_source"]
         db_id = x["db_id"]
         db_file = f"{self.db_path}/{db_id}/{db_id}.sqlite"
+        if os.path.exists(f"{self.db_modification_script_path}/{x['question_id']}.sql"):
+            db_modification_script = f"{self.db_modification_script_path}/{x['question_id']}.sql"
+        else:
+            db_modification_script = None
         if not (problem and answer):
             return None
         return ProblemGroupBuilder(
             env_thunk=partial(
-                SQLEnv, problem, answer, self.renderer, db_file, self.timeout
+                SQLEnv, problem_id, problem, answer, self.renderer, db_file, self.timeout, db_modification_script, self.dump_path
             ),
             num_envs=group_size,
             dataset_name=dataset_name,
@@ -263,31 +296,58 @@ class BIRDDatasetBuilder(RLDatasetBuilder):
     base_url: str | None = None
     model_name: str
     data_path: str
+    db_modification_script_path: str
     db_path: str
     timeout: int = 60
-    add_noise: bool = False
+    add_noise: str | None = None
+    n_epochs: int = 1
+    num_data: int = -1
 
     async def __call__(self) -> tuple[RLDataset, RLDataset]:
         sql_renderer = get_renderer(self.renderer_name, get_tokenizer(self.model_name))
-        train_data_path = f"{self.data_path}/clean_train.parquet" if not self.add_noise else f"{self.data_path}/noisy_train.parquet"
+
+        train_data_path = f"{self.data_path}/clean_train.parquet" 
+        if "question" in self.add_noise and "sql" not in self.add_noise:
+            train_data_path = f"{self.data_path}/noisy_question_train.parquet"
+        if "sql" in self.add_noise and "question" not in self.add_noise:
+            train_data_path = f"{self.data_path}/noisy_sql_train.parquet"
+        if "question" in self.add_noise and "sql" in self.add_noise:
+            train_data_path = f"{self.data_path}/noisy_train.parquet"
+        if "db" in self.add_noise:
+            assert "/databases" in self.db_path, "db_path must contain /databases if db noise is used"
+            db_path = self.db_path.replace("/databases", "/original_databases")
+        else:
+            db_path = self.db_path
+
         test_data_path = f"{self.data_path}/combined_test.parquet"
+
+        # log information about datasets
+        logger.info(f"Training data path: {train_data_path}")
+        logger.info(f"Test data path: {test_data_path}")
+        logger.info(f"Database path: {db_path}")
+
         training_dataset = BIRDDataset(
             batch_size=self.batch_size,
             group_size=self.train_group_size,
             renderer=sql_renderer,
             data_path=train_data_path,
+            db_modification_script_path=self.db_modification_script_path,
             timeout=self.timeout,
-            db_path=self.db_path,
-            split="train"
+            db_path=db_path,
+            split="train",
+            n_epochs=self.n_epochs,
+            num_data=self.num_data
         )
         test_dataset = BIRDDataset(
             batch_size=self.batch_size,
             group_size=1,
             renderer=sql_renderer,
             data_path=test_data_path,
+            db_modification_script_path=None,
             timeout=self.timeout,
             db_path=self.db_path,
-            split="test"
+            split="test",
+            n_epochs=1
         )
         return training_dataset, test_dataset
 

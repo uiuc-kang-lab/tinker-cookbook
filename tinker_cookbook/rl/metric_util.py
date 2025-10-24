@@ -105,9 +105,12 @@ def dataset_to_env_group_builders(dataset: RLDataset) -> list[EnvGroupBuilder]:
 
 
 class RLTestSetEvaluator(SamplingClientEvaluator):
-    def __init__(self, dataset: RLDataset, max_tokens: int):
-        self.env_group_builders_P = dataset_to_env_group_builders(dataset)
+    def __init__(self, dataset: RLDataset, max_tokens: int, dump_path: str | None = None):
         self.max_tokens = max_tokens
+        self.dump_path = dump_path
+        if dump_path is not None and hasattr(dataset, "set_dump_path"):
+            dataset.set_dump_path(dump_path)
+        self.env_group_builders_P = dataset_to_env_group_builders(dataset)
 
     async def __call__(self, sampling_client: tinker.SamplingClient) -> dict[str, float]:
         policy = TinkerTokenCompleter(sampling_client, max_tokens=self.max_tokens)
