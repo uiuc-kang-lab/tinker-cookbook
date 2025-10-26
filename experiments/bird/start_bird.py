@@ -5,12 +5,12 @@ import chz
 from tinker_cookbook import cli_utils
 from tinker_cookbook.recipes.sql_rl.sql_env import SQLEnv, BIRDDatasetBuilder
 from tinker_cookbook.rl import train
+from tinker_cookbook.model_info import get_recommended_renderer_name
 
 
 @chz.chz
 class CLIConfig:
     model_name: str = "Qwen/Qwen3-8B"
-    renderer_name: str = "qwen3"
     group_size: int = 8
     batch_size: int = 64
     learning_rate: float = 5e-5
@@ -22,9 +22,12 @@ class CLIConfig:
     log_path: str | None = None
     data_path: str | None = None
     db_path: str | None = None
-    add_noise: bool = False
+    db_modification_script_path: str | None = None
+    checkpoint_path: str | None = None
+    add_noise: str | None = None
     timeout: int = 30
     n_epochs: int = 1
+    num_data: int = -1
 
 
 def build_config(cli_config: CLIConfig) -> train.Config:
@@ -45,13 +48,16 @@ def build_config(cli_config: CLIConfig) -> train.Config:
 
     dataset_builder = BIRDDatasetBuilder(
         batch_size=cli_config.batch_size,
-        renderer_name=cli_config.renderer_name,
+        renderer_name=get_recommended_renderer_name(model_name),
         train_group_size=cli_config.group_size,
         model_name=cli_config.model_name,
         data_path=cli_config.data_path,
         db_path=cli_config.db_path,
         timeout=cli_config.timeout,
-        add_noise=cli_config.add_noise
+        add_noise=cli_config.add_noise,
+        n_epochs=cli_config.n_epochs,
+        db_modification_script_path=cli_config.db_modification_script_path,
+        num_data=cli_config.num_data,
     )
 
     return train.Config(
@@ -63,7 +69,9 @@ def build_config(cli_config: CLIConfig) -> train.Config:
         eval_every=cli_config.eval_every,
         wandb_project=cli_config.wandb_project,
         wandb_name=wandb_name,
-        n_epochs=cli_config.n_epochs
+        n_epochs=1,
+        save_every=cli_config.save_every,
+        load_checkpoint_path=cli_config.checkpoint_path,
     )
 
 
@@ -71,7 +79,7 @@ def main():
     cli_config = chz.entrypoint(CLIConfig)
     config = build_config(cli_config)
     # Avoid clobbering log dir from your previous run:
-    cli_utils.check_log_dir(config.log_path, behavior_if_exists="ask")
+    cli_utils.check_log_dir(config.log_path, behavior_if_exists="resume")
     asyncio.run(train.main(config))
 
 

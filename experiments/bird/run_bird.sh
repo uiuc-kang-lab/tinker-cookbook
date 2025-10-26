@@ -7,6 +7,9 @@ ADD_NOISE=False
 BASE_DIR=/data
 RUN_NAME=debug
 RENDERER_NAME=qwen3
+LEARNING_RATE=5e-5
+NUM_DATA=-1
+N_EPOCHS=16
 
 while [[ "$1" == --* ]]; do
     case "$1" in
@@ -22,8 +25,14 @@ while [[ "$1" == --* ]]; do
         --run_name=*)
             RUN_NAME="${1#*=}" 
             ;;
-        --renderer_name=*)
-            RENDERER_NAME="${1#*=}" 
+        --learning_rate=*)
+            LEARNING_RATE="${1#*=}" 
+            ;;
+        --num_data=*)
+            NUM_DATA="${1#*=}" 
+            ;;
+        --n_epochs=*)
+            N_EPOCHS="${1#*=}"
             ;;
         *)
             echo "Error: Unknown option '$1'"
@@ -37,21 +46,18 @@ done
 uv run experiments/bird/start_bird.py \
     data_path=$BASE_DIR/data/bird \
     log_path=$BASE_DIR/tinker/$RUN_NAME \
-    db_path=$BASE_DIR/databases
+    db_path=$BASE_DIR/data/bird/databases \
     model_name=$MODEL_NAME \
-    renderer_name=$RENDERER_NAME \
     batch_size=64 \
     group_size=8 \
-    learning_rate=5e-5 \
-    lora_rank=128 \
+    learning_rate=$LEARNING_RATE \
     max_tokens=3072 \
-    use_kl=False \
-    kl_penalty_coef=0 \
-    kl_discount_factor=0 \
     eval_every=10 \
-    save_every=50 \
+    save_every=10 \
     add_noise=$ADD_NOISE \
     wandb_name=$RUN_NAME \
-    n_epochs=16 \
-    timeout=60
+    n_epochs=$N_EPOCHS \
+    timeout=60 \
+    db_modification_script_path=/data/yuxuan_zhu/noisy-rl/BIRD-Platinum/db_modification \
+    num_data=$NUM_DATA
     

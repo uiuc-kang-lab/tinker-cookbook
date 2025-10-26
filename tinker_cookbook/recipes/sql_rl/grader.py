@@ -41,6 +41,16 @@ def grade_subset(all_results, matching_results, strict_row_count: int = None, mi
         return False, {"message": "Not all matching rows are in the full result set"}
     return True, {"message": "All matching rows are in the full result set"}
 
+def grade_list(result1, result2):
+    # check if length matches
+    if len(result1) != len(result2):
+        return False, {"message": "Number of rows do not match"}
+    # sort the tuple in each row
+    sorted_result1 = [tuple(sorted([str(r) for r in row])) for row in result1]
+    sorted_result2 = [tuple(sorted([str(r) for r in row])) for row in result2]
+    if sorted_result1 != sorted_result2:
+        return False, {"message": "Results do not match in order"}
+    return True, {"message": "Results match in order"}
 
 def grade(ground_truth_result, generated_result, grading_method: str = "multiset"):
     if not grade_basic(ground_truth_result, generated_result):
@@ -56,6 +66,8 @@ def grade(ground_truth_result, generated_result, grading_method: str = "multiset
             return grade_subset(ground_truth_result, generated_result, minimum_row_count=int(row_count))
         else:
             return False, {"message": f"Unknown subset method: {method}"}
+    elif "list" in grading_method:
+        return grade_list(ground_truth_result, generated_result)
     else:
         return False, {"message": f"Unknown grading method: {grading_method}"}
     

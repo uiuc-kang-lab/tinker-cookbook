@@ -6,16 +6,15 @@ MODEL_NAME=Qwen/Qwen3-8B
 ADD_NOISE=False
 BASE_DIR=/data
 RUN_NAME=debug
-LORA_RANK=128
-LEARNING_RATE=5e-5
+RENDERER_NAME=qwen3
 
 while [[ "$1" == --* ]]; do
     case "$1" in
         --model=*)
             MODEL_NAME="${1#*=}" 
             ;;
-        --add_noise=*)
-            ADD_NOISE="${1#*=}" 
+        --noise_rate=*)
+            NOISE_RATE="${1#*=}" 
             ;;
         --base_dir=*)
             BASE_DIR=${1#*=} 
@@ -23,11 +22,8 @@ while [[ "$1" == --* ]]; do
         --run_name=*)
             RUN_NAME="${1#*=}" 
             ;;
-        --lora_rank=*)
-            LORA_RANK="${1#*=}" 
-            ;;
-        --learning_rate=*)
-            LEARNING_RATE="${1#*=}" 
+        --group_size=*)
+            GROUP_SIZE="${1#*=}" 
             ;;
         *)
             echo "Error: Unknown option '$1'"
@@ -38,22 +34,17 @@ while [[ "$1" == --* ]]; do
 done
 
 
-uv run experiments/deepscaler_math/start_deepscaler.py \
-    data_path=$BASE_DIR/data/deepscaler \
+uv run experiments/lexam/start_lexam.py \
+    data_path=$BASE_DIR/data/lexam \
     log_path=$BASE_DIR/tinker/$RUN_NAME \
     model_name=$MODEL_NAME \
     batch_size=64 \
-    group_size=16 \
-    learning_rate=$LEARNING_RATE \
-    lora_rank=$LORA_RANK \
+    group_size=$GROUP_SIZE \
+    learning_rate=5e-4 \
     max_tokens=3072 \
-    use_kl=False \
-    kl_penalty_coef=0 \
-    kl_discount_factor=0 \
-    num_substeps=1 \
-    remove_constant_reward_groups=True \
     eval_interval=10 \
     save_interval=50 \
-    add_noise=$ADD_NOISE \
-    wandb_name=$RUN_NAME 
+    noise_rate=$NOISE_RATE \
+    wandb_name=$RUN_NAME \
+    n_epochs=20
     

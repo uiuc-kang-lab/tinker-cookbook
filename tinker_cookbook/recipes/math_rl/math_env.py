@@ -39,7 +39,8 @@ class MathEnv(ProblemEnv):
         return ""
 
     def get_question(self) -> str:
-        return self.problem + self.question_suffix()
+        prompt = self.problem + self.question_suffix()
+        return prompt
 
     def check_format(self, sample_str: str) -> bool:
         try:

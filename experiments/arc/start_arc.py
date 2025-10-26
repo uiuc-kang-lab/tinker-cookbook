@@ -5,10 +5,17 @@ from typing import Literal, cast
 from tinker_cookbook.tokenizer_utils import get_tokenizer
 from tinker_cookbook import renderers
 from tinker_cookbook import model_info
-from tinker_cookbook.recipes.math_rl.math_env import Gsm8kDatasetBuilder
+from tinker_cookbook.rl.problem_env import ProblemEnv
+from tinker_cookbook.rl.types import (
+    Action,
+    EnvGroupBuilder,
+    StepResult,
+    RLDataset, 
+    RLDatasetBuilder
+)
+import tinker
 import asyncio
 import chz
-from tinker_cookbook.rl.types import EnvGroupBuilder, RLDataset, RLDatasetBuilder
 from datasets import Dataset, load_dataset
 import math
 from functools import partial
@@ -22,23 +29,76 @@ class Config:
     checkpoint_path: str | None = None
     batch_size: int = 64
     group_size: int = 16
-    learning_rate: float = 1e-6
+    learning_rate: float = 5e-4
     lora_rank: int = 32
     max_tokens: int = 3072
-    use_kl: bool = True
+    use_kl: bool = False
     kl_penalty_coef: float = 0
     kl_discount_factor: float = 0
     num_substeps: int = 1
-    wandb_project: str = "tinker-deepscaler"
+    wandb_project: str = "tinker-arc-bs1"
     wandb_name: str = "test"
     remove_constant_reward_groups: bool = False
     eval_interval: int = 10
     save_interval: int = 10
-    add_noise: bool = False
+    noise_rate: float = 0
+    n_epochs: int = 1
 
+class ArcEnv(ProblemEnv):
+    def __init__(
+        self,
+        question: str,
+        answer: str,
+        renderer: renderers.Renderer,
+        convo_prefix: list[renderers.Message] | None = None
+    ):
+        self.question = question
+        self.answer = answer
+        self.renderer = renderer
+        self.convo_prefix = convo_prefix if convo_prefix is not None else []
 
+    def get_question(self) -> str:
+        return self.question
 
-class DeepScalerDataset(RLDataset):
+    def check_format(self, sample_str: str) -> bool:
+        return True
+    
+    def check_answer(self, sample_str):
+        if "####" not in sample_str:
+            # print("Env: Action does not contain ####, returning 0 reward")
+            return False
+        pred_answer = sample_str.split("####")[-1].split(".")[0].strip().lower()
+        # if pred_answer has more than one alphabetic character, return 0
+        if sum(c.isalpha() for c in pred_answer) > 1:
+            # print("Env: Action contains more than one alphabetic character, returning 0 reward")
+            return False
+        # extract the first alphabetic character
+        pred_answer = "".join([c for c in pred_answer if c.isalpha()])
+        if len(pred_answer) == 0:
+            # print("Env: Action does not contain any alphabetic characters, returning 0 reward")
+            return False
+        pred_answer = pred_answer[0]
+        if pred_answer == self.answer.lower():
+            # print("Env: Action is correct, returning 1 reward")
+            return True
+        else:
+            # print("Env: Action is incorrect, returning 0 reward")
+            return False
+
+    async def step(self, action: Action) -> StepResult:
+        message, parse_success = self.renderer.parse_response(action)
+        correct_answer = float(self.check_answer(message["content"]))
+        return StepResult(
+            reward=correct_answer,
+            episode_done=True,
+            next_observation=tinker.ModelInput.empty(),
+            next_stop_condition=self.stop_condition,
+            metrics={
+                "correct": correct_answer,
+            },
+        )
+
+class ArcDataset(RLDataset):
     def __init__(
         self,
         batch_size: int,
@@ -53,7 +113,6 @@ class DeepScalerDataset(RLDataset):
         self.ds = cast(Dataset, load_dataset("parquet", data_files=data_path, keep_in_memory=True)["train"])
         if split == "train":
             self.ds = self.ds.shuffle(seed=0)
-        # select the first 100 data
 
         self.batch_size = batch_size
         self.group_size = group_size if split == "train" else 1
@@ -88,32 +147,33 @@ class DeepScalerDataset(RLDataset):
             return None
         return ProblemGroupBuilder(
             env_thunk=partial(
-                MathEnv, problem, answer, self.renderer, convo_prefix=self.convo_prefix
+                ArcEnv, problem, answer, self.renderer, convo_prefix=self.convo_prefix
             ),
             num_envs=group_size,
             dataset_name=dataset_name,
         )
 
 @chz.chz
-class DeepScalerDatasetBuilder(RLDatasetBuilder):
+class ArcDatasetBuilder(RLDatasetBuilder):
     batch_size: int
     model_name_for_tokenizer: str
     renderer_name: str
     group_size: int
     convo_prefix: list[renderers.Message] | None | Literal["standard"] = "standard"
     data_path: str
-    add_noise: bool
+    noise_rate: float
 
-    async def __call__(self) -> tuple[DeepScalerDataset, DeepScalerDataset]:
+    async def __call__(self) -> tuple[ArcDataset, ArcDataset]:
         if self.convo_prefix == "standard":
             convo_prefix = MathEnv.standard_fewshot_prefix()
         else:
             convo_prefix = self.convo_prefix
         tokenizer = get_tokenizer(self.model_name_for_tokenizer)
         renderer = renderers.get_renderer(self.renderer_name, tokenizer=tokenizer)
-        train_dataset_name = "deepscaler_train.parquet" if not self.add_noise else "deepscaler_train_with_wrong_answers.parquet"
-        test_dataset_name = "deepscaler_test.parquet"
-        train_dataset = DeepScalerDataset(
+        train_dataset_name = "train.parquet" if self.noise_rate == 0 else f"train_noise_{self.noise_rate:.1f}.parquet"
+        print(f"Loading train dataset from {self.data_path}/{train_dataset_name}")
+        test_dataset_name = "val.parquet"
+        train_dataset = ArcDataset(
                 batch_size=self.batch_size,
                 group_size=self.group_size,
                 renderer=renderer,
@@ -122,7 +182,7 @@ class DeepScalerDatasetBuilder(RLDatasetBuilder):
                 data_path=f"{self.data_path}/{train_dataset_name}"
             )
         print(train_dataset.ds[1])
-        test_dataset = DeepScalerDataset(
+        test_dataset = ArcDataset(
                 batch_size=self.batch_size,
                 group_size=self.group_size,
                 renderer=renderer,
@@ -136,22 +196,15 @@ class DeepScalerDatasetBuilder(RLDatasetBuilder):
 def main(config: Config):
     config = TrainConfig(
         learning_rate=config.learning_rate,
-        dataset_builder=DeepScalerDatasetBuilder(
+        dataset_builder=ArcDatasetBuilder(
             batch_size=64, 
             model_name_for_tokenizer=config.model_name, 
             renderer_name=model_info.get_recommended_renderer_name(config.model_name), 
             group_size=config.group_size, 
             convo_prefix=None,
             data_path=config.data_path,
-            add_noise=config.add_noise
+            noise_rate=config.noise_rate
         ),
-        # dataset_builder=Gsm8kDatasetBuilder(
-        #     batch_size=64,
-        #     model_name_for_tokenizer=config.model_name,
-        #     renderer_name="qwen3_disable_thinking",
-        #     group_size=config.group_size,
-        #     convo_prefix=None
-        # ),
         model_name=config.model_name,
         max_tokens=config.max_tokens,
         compute_post_kl=config.use_kl,
@@ -167,6 +220,7 @@ def main(config: Config):
         eval_every=config.eval_interval,
         save_every=config.save_interval,
         load_checkpoint_path=config.checkpoint_path,
+        n_epochs=config.n_epochs,
     )
 
     asyncio.run(train(config))

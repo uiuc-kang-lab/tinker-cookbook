@@ -74,7 +74,7 @@ convo_prefix = [
 ]
 
 class SQLEnv(Env):
-    def __init__(self, question_id: str, question: str, gold_answer: int, renderer: Renderer, db_file, timeout, db_modification_script: str | None, dump_path: str | None = None):
+    def __init__(self, question_id: str, question: str, gold_answer: int, grading_method: str, renderer: Renderer, db_file, timeout, db_modification_script: str | None, dump_path: str | None = None):
         self.renderer: Renderer = renderer
         self.turns: list[Message] = []
         self.gold_answer: int = gold_answer
@@ -85,6 +85,7 @@ class SQLEnv(Env):
         self.question_id = question_id
         self.db_modification_script = db_modification_script
         self.dump_path = dump_path
+        self.grading_method = grading_method
 
     @property
     def stop_condition(self) -> StopCondition:
@@ -105,8 +106,8 @@ class SQLEnv(Env):
 
         Expected: <sql>...</sql>
         """
-        match = re.search(r"<sql>(.*?)</sql>", action, re.DOTALL)
-        tool_input = match.group(1) if match else None
+        matches = re.findall(r"<sql>(.*?)</sql>", action, re.DOTALL)
+        tool_input = matches[-1] if matches else None
         return tool_input
 
     def _get_user_turn(self, action_text: str) -> tuple[Message, float, str]:
@@ -154,12 +155,15 @@ class SQLEnv(Env):
             ref = execute_sql_wrapper_single(self.db_file, self.gold_answer, self.timeout, action_text, self.db_modification_script)
 
             _, _, pred_results, error, _ = pred
-            _, _, gt_results, _, _ = ref
+            _, _, gt_results, gt_error, _ = ref
 
             if pred_results is None:
                 return None, 0.0
+            elif gt_results is None:
+                print(f"Ground truth SQL {self.question_id} execution error: {gt_error}. Possibly the gold SQL timed out.")
+                return None, 0.0
             else:
-                if pred_results == gt_results:
+                if grade(gt_results, pred_results, self.grading_method)[0]:
                     return None, 1.0
                 else:
                     return None, 0.0
@@ -270,6 +274,7 @@ class BIRDDataset(RLDataset):
         problem_id = f"{x['data_source']}_{x['question_id']}"
         problem = x["prompt"][1]["content"]
         answer = x["reward_spec"]["ground_truth"]
+        grading_method = x["reward_spec"].get("grading_method", "multiset")
         dataset_name = x["data_source"]
         db_id = x["db_id"]
         db_file = f"{self.db_path}/{db_id}/{db_id}.sqlite"
@@ -281,7 +286,7 @@ class BIRDDataset(RLDataset):
             return None
         return ProblemGroupBuilder(
             env_thunk=partial(
-                SQLEnv, problem_id, problem, answer, self.renderer, db_file, self.timeout, db_modification_script, self.dump_path
+                SQLEnv, problem_id, problem, answer, grading_method, self.renderer, db_file, self.timeout, db_modification_script, self.dump_path
             ),
             num_envs=group_size,
             dataset_name=dataset_name,
