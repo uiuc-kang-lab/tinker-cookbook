@@ -24,6 +24,7 @@ from tinker_cookbook.recipes.sql_rl.sql_utils import verify_format_and_extract, 
 from tinker_cookbook.recipes.sql_rl.grader import grade
 from tinker_cookbook import renderers
 from tinker_cookbook.rl.problem_env import ProblemGroupBuilder
+from tinker_cookbook.recipes.sql_rl.prompts import system_prompt, instruction_prompt, task_overview_prompt
 from datasets import load_dataset, Dataset, concatenate_datasets
 from typing import Literal, cast, Tuple, Any
 from functools import partial
@@ -34,37 +35,8 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-_UPPER_BOUND = 1024
 MAX_TURNS = 5
-system_prompt = """
-Task Overview:
-You are a data science expert. Below, you are provided with a database schema and a natural language question. Your task is to understand the schema and generate a valid SQL query to answer the question within limited turns. You should breakdown the problem, draft your reasoning process, and generate the solution.
 
-Database Engine:
-SQLite
-
-Database Schema:
-{db_details}
-This schema describes the database's structure, including tables, columns, primary keys, foreign keys, and any relevant relationships or constraints.
-
-External Knowledge:
-{external_knowledge}
-
-Question:
-{question}
-
-Instructions:
-- Make sure you only output the information that is asked in the question. If the question asks for a specific column, make sure to only include that column in the SELECT clause, nothing more.
-- The generated query should return all of the information asked in the question without any missing or extra information.
-- Before generating the final SQL query, please think through the steps of how to write the query. It should include etailed considerations such as analisying questions, summarizing relevant findings, brainstorming new ideas, verifying the accuracy of the current steps, refining any errors, thinking of how to call SQL tools, and revisiting previous steps.
-
-
-Format:
-- Conduct thinking every time you get new observation or information. 
-- You can use SQL tool written within a single <sql>your sql</sql> block to explore or verify. You will receive the execution results or error information of the SQL from a user. Based on this information, you can think again and refine.
-- The returned dataframe will be truncated in 50 rows if observation is too long. 
-- If you find no further exploration is needed or reaches max turns, you MUST directly provide the final SQL query solution inside <solution>...</solution>. 
-"""
 convo_prefix = [
     Message(role="system", content=system_prompt),
     Message(role="user", content="{db_details}: CREATE TABLE animals (\n`id` integer, -- ID of the animal.\n`species` text, -- species of the animal.\n`age` integer, -- age of the animal.\n`name` text, -- name of the animal.\nprimary key (id)\n);\n\n{external_knowledge}: pig is the species of.\n{question}: how many pigs are in the farm?"),
@@ -74,7 +46,8 @@ convo_prefix = [
 ]
 
 class SQLEnv(Env):
-    def __init__(self, question_id: str, question: str, gold_answer: int, grading_method: str, renderer: Renderer, db_file, timeout, db_modification_script: str | None, dump_path: str | None = None):
+    def __init__(self, question_id: str, question: str, gold_answer: int, grading_method: str, renderer: Renderer, db_file, timeout, db_modification_script: str | None, dump_path: str | None = None, use_convo_prefix: bool = True, use_system_prompt: bool = True, max_output_tokens_per_turn: int = 3072,
+    max_input_tokens: int = 32768):
         self.renderer: Renderer = renderer
         self.turns: list[Message] = []
         self.gold_answer: int = gold_answer
@@ -86,6 +59,10 @@ class SQLEnv(Env):
         self.db_modification_script = db_modification_script
         self.dump_path = dump_path
         self.grading_method = grading_method
+        self.use_convo_prefix = use_convo_prefix
+        self.use_system_prompt = use_system_prompt
+        self.max_output_tokens_per_turn = max_output_tokens_per_turn
+        self.max_input_tokens = max_input_tokens
 
     @property
     def stop_condition(self) -> StopCondition:
@@ -94,7 +71,14 @@ class SQLEnv(Env):
     @property
     def _obs(self) -> ModelInput:
         """Get the observation for the player in tokenized form"""
-        convo = convo_prefix + [Message(role="assistant", content=self.question)] + self.turns
+        if self.use_convo_prefix and self.use_system_prompt:
+            convo = convo_prefix + [Message(role="assistant", content=self.question)] + self.turns
+        elif not self.use_convo_prefix and self.use_system_prompt:
+            convo = [Message(role="system", content=system_prompt), Message(role="assistant", content=self.question)] + self.turns
+        elif not self.use_system_prompt:
+            user_prompt = task_overview_prompt + instruction_prompt + self.question
+            convo = [Message(role="user", content=user_prompt)] + self.turns
+        # print(f"========== DEBUG ==========\n Current conversation turns: {[{'role': m["role"], 'content': m["content"]} for m in convo]}")
         return self.renderer.build_generation_prompt(convo)
 
     async def initial_observation(self) -> tuple[ModelInput, StopCondition]:
@@ -199,9 +183,7 @@ class SQLEnv(Env):
             self.turns.append(user_turn)
         episode_done = self._is_done(action_message['content'])
 
-
-        # if next_obs is longer than 32768, mark as done
-        if self._obs.length + 3072 > 32768:
+        if self._obs.length + self.max_output_tokens_per_turn > self.max_input_tokens:
             episode_done = True
             print("Observation too long, marking episode as done.")
 
@@ -228,6 +210,10 @@ class BIRDDataset(RLDataset):
         split: Literal["train", "test"] = "train",
         n_epochs: int = 1,
         num_data: int = -1,
+        use_convo_prefix: bool = True,
+        use_system_prompt: bool = True,
+        max_output_tokens_per_turn: int = 3072,
+        max_input_tokens: int = 32768,
     ):
         if split not in ("train", "test"):
             raise ValueError("split must be 'train' or 'test'")
@@ -246,6 +232,10 @@ class BIRDDataset(RLDataset):
         self.timeout = timeout
         self.db_modification_script_path = db_modification_script_path
         self.dump_path = None
+        self.use_system_prompt = use_system_prompt
+        self.use_convo_prefix = use_convo_prefix
+        self.max_output_tokens_per_turn = max_output_tokens_per_turn
+        self.max_input_tokens = max_input_tokens
 
     @classmethod
     def question_suffix(cls) -> str:
@@ -286,7 +276,7 @@ class BIRDDataset(RLDataset):
             return None
         return ProblemGroupBuilder(
             env_thunk=partial(
-                SQLEnv, problem_id, problem, answer, grading_method, self.renderer, db_file, self.timeout, db_modification_script, self.dump_path
+                SQLEnv, problem_id, problem, answer, grading_method, self.renderer, db_file, self.timeout, db_modification_script, self.dump_path, self.use_convo_prefix, self.use_system_prompt, self.max_output_tokens_per_turn, self.max_input_tokens
             ),
             num_envs=group_size,
             dataset_name=dataset_name,
@@ -307,6 +297,10 @@ class BIRDDatasetBuilder(RLDatasetBuilder):
     add_noise: str | None = None
     n_epochs: int = 1
     num_data: int = -1
+    use_convo_prefix: bool = True
+    use_system_prompt: bool = True
+    max_output_tokens_per_turn: int = 3072
+    max_input_tokens: int = 32768
 
     async def __call__(self) -> tuple[RLDataset, RLDataset]:
         sql_renderer = get_renderer(self.renderer_name, get_tokenizer(self.model_name))
@@ -341,7 +335,11 @@ class BIRDDatasetBuilder(RLDatasetBuilder):
             db_path=db_path,
             split="train",
             n_epochs=self.n_epochs,
-            num_data=self.num_data
+            num_data=self.num_data,
+            use_system_prompt=self.use_system_prompt,
+            use_convo_prefix=self.use_convo_prefix,
+            max_output_tokens_per_turn=self.max_output_tokens_per_turn,
+            max_input_tokens=self.max_input_tokens,
         )
         test_dataset = BIRDDataset(
             batch_size=self.batch_size,
@@ -352,7 +350,11 @@ class BIRDDatasetBuilder(RLDatasetBuilder):
             timeout=self.timeout,
             db_path=self.db_path,
             split="test",
-            n_epochs=1
+            n_epochs=1,
+            use_system_prompt=self.use_system_prompt,
+            use_convo_prefix=self.use_convo_prefix,
+            max_output_tokens_per_turn=self.max_output_tokens_per_turn,
+            max_input_tokens=self.max_input_tokens,
         )
         return training_dataset, test_dataset
 

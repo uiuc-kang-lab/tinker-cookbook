@@ -68,13 +68,16 @@ def execute_sql_single(db_file, sql, db_modification_script):
         # print('Successfully executed')
         return db_file, sql, execution_res, 1
     except Exception as e:
-        print(f"Error executing SQL: {e}, db file: {db_file}, SQL: {sql}")
+        # print(f"Error executing SQL: {e}, db file: {db_file}")
         conn.rollback()
         conn.close()
-        return db_file, sql, None, f"Error executing SQL: {e}, db file: {db_file}, SQL: {sql}"
+        return db_file, sql, None, f"Error executing SQL: {e}, db file: {db_file}"
 
 
 def execute_sql_wrapper_single(db_file, sql, timeout, output_str, db_modification_script=None):
+    # post-hoc fix for database table name issues
+    if sql is not None and "current-terms" in sql.lower():
+        sql = sql.lower().replace("current-terms", "current_terms")
     try:
         res = func_timeout(timeout, execute_sql_single, args=(db_file, sql, db_modification_script))
     except KeyboardInterrupt:

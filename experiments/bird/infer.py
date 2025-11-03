@@ -18,6 +18,7 @@ class CLIConfig:
     output_path: str
     timeout: int = 30
     sampler_path: str
+    test_data: str = "combined_test.parquet"
 
 
 async def build_config(cli_config: CLIConfig) -> train.Config:
@@ -30,7 +31,7 @@ async def build_config(cli_config: CLIConfig) -> train.Config:
         batch_size=64,
         group_size=1,
         renderer=get_renderer(renderer_name, get_tokenizer(model_name)),
-        data_path=f"{cli_config.data_path}/combined_test.parquet",
+        data_path=f"{cli_config.data_path}/{cli_config.test_data}",
         db_modification_script_path=None,
         timeout=cli_config.timeout,
         db_path=cli_config.db_path,

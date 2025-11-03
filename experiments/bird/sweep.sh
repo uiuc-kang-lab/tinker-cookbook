@@ -6,14 +6,13 @@ MODEL_NAME=Qwen/Qwen3-8B
 ADD_NOISE=False
 BASE_DIR=/data
 RUN_NAME=debug
-RENDERER_NAME=default
-LEARNING_RATE=5e-5
 NUM_DATA=-1
 N_EPOCHS=16
-MAX_OUTPUT_TOKENS_PER_TURN=3072
-MAX_INPUT_TOKENS=32768
-USE_CONVO_PREFIX=True
-USE_SYSTEM_PROMPT=True
+BATCH_SIZE=64
+GROUP_SIZE=8
+
+LEARNING_RATE=5e-5
+MAX_TOKENS=3072
 
 while [[ "$1" == --* ]]; do
     case "$1" in
@@ -32,26 +31,20 @@ while [[ "$1" == --* ]]; do
         --learning_rate=*)
             LEARNING_RATE="${1#*=}" 
             ;;
+        --group_size=*)
+            GROUP_SIZE="${1#*=}" 
+            ;;
+        --batch_size=*)
+            BATCH_SIZE="${1#*=}" 
+            ;;
+        --max_tokens=*)
+            MAX_TOKENS="${1#*=}" 
+            ;;
         --num_data=*)
             NUM_DATA="${1#*=}" 
             ;;
         --n_epochs=*)
             N_EPOCHS="${1#*=}"
-            ;;
-        --max_output_tokens_per_turn=*)
-            MAX_OUTPUT_TOKENS_PER_TURN="${1#*=}"
-            ;;
-        --max_input_tokens=*)
-            MAX_INPUT_TOKENS="${1#*=}"
-            ;;
-        --use_convo_prefix=*)
-            USE_CONVO_PREFIX="${1#*=}"
-            ;;
-        --use_system_prompt=*)
-            USE_SYSTEM_PROMPT="${1#*=}"
-            ;;
-        --renderer_name=*)
-            RENDERER_NAME="${1#*=}"
             ;;
         *)
             echo "Error: Unknown option '$1'"
@@ -67,11 +60,10 @@ uv run experiments/bird/start_bird.py \
     log_path=$BASE_DIR/tinker/$RUN_NAME \
     db_path=$BASE_DIR/data/bird/databases \
     model_name=$MODEL_NAME \
-    batch_size=64 \
-    group_size=8 \
+    batch_size=$BATCH_SIZE \
+    group_size=$GROUP_SIZE \
     learning_rate=$LEARNING_RATE \
-    max_output_tokens_per_turn=$MAX_OUTPUT_TOKENS_PER_TURN \
-    max_input_tokens=$MAX_INPUT_TOKENS \
+    max_tokens=$MAX_TOKENS \
     eval_every=10 \
     save_every=10 \
     add_noise=$ADD_NOISE \
@@ -79,7 +71,5 @@ uv run experiments/bird/start_bird.py \
     n_epochs=$N_EPOCHS \
     timeout=60 \
     db_modification_script_path=/data/yuxuan_zhu/noisy-rl/BIRD-Platinum/db_modification \
-    num_data=$NUM_DATA \
-    use_convo_prefix=$USE_CONVO_PREFIX \
-    use_system_prompt=$USE_SYSTEM_PROMPT
+    num_data=$NUM_DATA
     
