@@ -6,7 +6,7 @@ import re
 import string
 from functools import partial, reduce
 from pathlib import Path
-from typing import Literal, TypedDict, cast
+from typing import Literal, Sequence, TypedDict, cast
 
 import chz
 import pandas as pd
@@ -150,6 +150,10 @@ class SearchEnv(ProblemEnv):
     def check_format(self, sample_str: str) -> bool:
         return self._extract_answer(sample_str) is not None
 
+    def get_reference_answer(self) -> str:
+        """Return the reference answer for logging purposes."""
+        return " OR ".join(self.answer) if self.answer else "N/A"
+
     async def call_search_tool(self, tool_call: renderers.ToolCall) -> list[renderers.Message]:
         async with _CONNECTION_SEMAPHORE:
             return await self.chroma_tool_client.invoke(tool_call)
@@ -271,9 +275,6 @@ def download_search_r1_dataset(split: Literal["train", "test"]) -> list[SearchR1
     tmp_download_dir = Path("/tmp") / user / "data" / hf_repo_id / split
     tmp_download_dir.mkdir(parents=True, exist_ok=True)
 
-    hf_repo_id: str = "PeterJinGo/nq_hotpotqa_train"
-    parquet_filename: str = f"{split}.parquet"
-
     local_parquet_filepath = hf_hub_download(
         repo_id=hf_repo_id,
         filename=parquet_filename,
@@ -315,7 +316,7 @@ class SearchR1Dataset(RLDataset):
         rng = random.Random(self.seed)
         rng.shuffle(self.ds)
 
-    def get_batch(self, index: int) -> list[EnvGroupBuilder]:
+    def get_batch(self, index: int) -> Sequence[EnvGroupBuilder]:
         return [
             self._make_env_group_builder(row, self.group_size)
             for row in self.ds[index * self.batch_size : (index + 1) * self.batch_size]

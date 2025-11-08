@@ -3,3 +3,4 @@
 scripts
 results/
 logs/
+**/__pycache__

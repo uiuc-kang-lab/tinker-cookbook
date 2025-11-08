@@ -65,6 +65,22 @@ def get_gpt_oss_info() -> dict[str, ModelAttributes]:
     }
 
 
+def get_deepseek_info() -> dict[str, ModelAttributes]:
+    org = "deepseek-ai"
+    return {
+        "DeepSeek-V3.1": ModelAttributes(org, "3", "671B-A37B", True),
+        "DeepSeek-V3.1-Base": ModelAttributes(org, "3", "671B-A37B", False),
+    }
+
+
+def get_gpt_oss_info() -> dict[str, ModelAttributes]:
+    org = "openai"
+    return {
+        "gpt-oss-20b": ModelAttributes(org, "1", "21B-A3.6B", True),
+        "gpt-oss-120b": ModelAttributes(org, "1", "117B-A5.1B", True),
+    }
+
+
 def get_model_attributes(model_name: str) -> ModelAttributes:
     org, model_version_full = model_name.split("/")
     if org == "meta-llama":

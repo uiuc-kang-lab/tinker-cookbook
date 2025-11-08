@@ -234,7 +234,7 @@ class TwoPlayerTextArenaDataset(RLDataset):
             "num_datapoints must be divisible by num_players"
         )
 
-    def get_batch(self, index: int) -> list[EnvGroupBuilder]:
+    def get_batch(self, index: int) -> Sequence[EnvGroupBuilder]:
         return [
             self.builder
             for i in range(self.batch_size // self.builder.num_players)

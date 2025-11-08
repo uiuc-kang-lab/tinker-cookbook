@@ -1,4 +1,5 @@
 from functools import partial
+from typing import Sequence
 
 import chz
 import numpy as np
@@ -38,6 +39,9 @@ class ArithmeticEnv(ProblemEnv):
     def check_format(self, sample_str: str) -> bool:
         return True
 
+    def get_reference_answer(self) -> str:
+        return str(self.x + self.y)
+
     @staticmethod
     def standard_fewshot_prefix() -> list[renderers.Message]:
         return [
@@ -62,7 +66,7 @@ class ArithmeticDataset(RLDataset):
         self.n_batches = n_batches
         self.include_fewshot = include_fewshot
 
-    def get_batch(self, index: int) -> list[EnvGroupBuilder]:
+    def get_batch(self, index: int) -> Sequence[EnvGroupBuilder]:
         self._rng.seed(index)
         return [self._make_env_group_builder(self._rng) for _ in range(self.batch_size)]
 

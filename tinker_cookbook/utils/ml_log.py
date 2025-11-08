@@ -17,6 +17,7 @@ from tinker_cookbook.utils.code_state import code_state
 
 logger = logging.getLogger(__name__)
 
+# Check WandB availability
 _wandb_available = False
 try:
     import wandb
@@ -24,6 +25,24 @@ try:
     _wandb_available = True
 except ImportError:
     wandb = None
+
+# Check Neptune availability
+_neptune_available = False
+try:
+    from neptune_scale import Run as NeptuneRun
+
+    _neptune_available = True
+except ImportError:
+    NeptuneRun = None
+
+# Check Trackio availability
+_trackio_available = False
+try:
+    import trackio
+
+    _trackio_available = True
+except ImportError:
+    trackio = None
 
 
 def dump_config(config: Any) -> Any:
@@ -77,6 +96,10 @@ class Logger(ABC):
         """Force synchronization (optional to implement)."""
         pass
 
+    def get_logger_url(self) -> str | None:
+        """Get a permalink to view this logger's results."""
+        return None
+
 
 class _PermissiveJSONEncoder(json.JSONEncoder):
     """A JSON encoder that handles non-encodable objects by converting them to their type string."""
@@ -129,7 +152,7 @@ class PrettyPrintLogger(Logger):
 
     def log_hparams(self, config: Any) -> None:
         """Print configuration summary."""
-        config_dict = chz.asdict(config)
+        config_dict = dump_config(config)
         with _rich_console_use_logger(self.console):
             self.console.print("[bold cyan]Configuration:[/bold cyan]")
             for key, value in config_dict.items():
@@ -184,7 +207,10 @@ class WandbLogger(Logger):
         wandb_name: str | None = None,
     ):
         if not _wandb_available:
-            raise ImportError("wandb is not installed. Please install it with: pip install wandb")
+            raise ImportError(
+                "wandb is not installed. Please install it with: "
+                "pip install wandb (or uv add wandb)"
+            )
 
         if not os.environ.get("WANDB_API_KEY"):
             raise ValueError("WANDB_API_KEY environment variable not set")
@@ -207,11 +233,108 @@ class WandbLogger(Logger):
         """Log metrics to wandb."""
         if self.run and wandb is not None:
             wandb.log(metrics, step=step)
+            logger.info("Logging to: %s", self.run.url)
 
     def close(self) -> None:
         """Close wandb run."""
         if self.run and wandb is not None:
             wandb.finish()
+
+    def get_logger_url(self) -> str | None:
+        """Get the URL of the wandb run."""
+        if self.run and wandb is not None:
+            return self.run.url
+        return None
+
+
+class NeptuneLogger(Logger):
+    """Logger for Neptune."""
+
+    def __init__(
+        self,
+        project: str | None = None,
+        config: Any | None = None,
+        log_dir: str | Path | None = None,
+        neptune_name: str | None = None,
+    ):
+        if not _neptune_available:
+            raise ImportError(
+                "neptune-scale is not installed. Please install it with: "
+                "pip install neptune-scale (or uv add neptune-scale)"
+            )
+
+        if not os.environ.get("NEPTUNE_API_TOKEN"):
+            raise ValueError("NEPTUNE_API_TOKEN environment variable not set")
+
+        # Initialize neptune run
+        assert NeptuneRun is not None  # For type checker
+        self.run = NeptuneRun(
+            project=project,
+            log_directory=str(log_dir) if log_dir else None,
+            experiment_name=neptune_name,
+        )
+        self.run.log_configs(dump_config(config) if config else None, flatten=True)
+
+    def log_hparams(self, config: Any) -> None:
+        """Log hyperparameters to neptune."""
+        if self.run and NeptuneRun is not None:
+            self.run.log_configs(dump_config(config) if config else None, flatten=True)
+
+    def log_metrics(
+        self,
+        metrics: Dict[str, Any],
+        step: float | int | None = None,
+    ) -> None:
+        """Log metrics to neptune."""
+        if self.run and NeptuneRun is not None:
+            assert step is not None, "step is required to be int or float for Neptune logging."
+            self.run.log_metrics(metrics, step=step)
+            logger.info("Logging to: %s", self.run.get_run_url())
+
+    def close(self) -> None:
+        """Close neptune run."""
+        if self.run and NeptuneRun is not None:
+            self.run.close()
+
+
+class TrackioLogger(Logger):
+    """Logger for Trackio."""
+
+    def __init__(
+        self,
+        project: str | None = None,
+        config: Any | None = None,
+        log_dir: str | Path | None = None,
+        trackio_name: str | None = None,
+    ):
+        if not _trackio_available:
+            raise ImportError(
+                "trackio is not installed. Please install it with: "
+                "pip install trackio (or uv add trackio)"
+            )
+
+        assert trackio is not None
+        self.run = trackio.init(
+            project=project or "default",
+            name=trackio_name,
+            config=dump_config(config) if config else None,
+        )
+
+    def log_hparams(self, config: Any) -> None:
+        """Log hyperparameters to trackio."""
+        if self.run and trackio is not None:
+            pass
+
+    def log_metrics(self, metrics: Dict[str, Any], step: int | None = None) -> None:
+        """Log metrics to trackio."""
+        if self.run and trackio is not None:
+            trackio.log(metrics, step=step)
+            logger.info("Logged metrics to Trackio project: %s", self.run.project)
+
+    def close(self) -> None:
+        """Close trackio run."""
+        if self.run and trackio is not None:
+            trackio.finish()
 
 
 class MultiplexLogger(Logger):
@@ -247,6 +370,13 @@ class MultiplexLogger(Logger):
         for logger in self.loggers:
             if hasattr(logger, "sync"):
                 logger.sync()
+
+    def get_logger_url(self) -> str | None:
+        """Get the first URL returned by the child loggers."""
+        for logger in self.loggers:
+            if url := logger.get_logger_url():
+                return url
+        return None
 
 
 def setup_logging(
@@ -297,6 +427,40 @@ def setup_logging(
                     wandb_name=wandb_name,
                 )
             )
+
+    # Add Neptune logger if available and configured
+    # - MZ 10/8/25: Hack, but before doing bigger logger-agnostic refactor,
+    #   allow Neptune to use the same W&B project and name.
+    # - Project_name should be `workspace-name/project-name`.
+    # - Also allow logging to both W&B and Neptune
+    if wandb_project and _neptune_available:
+        # if not _neptune_available:
+        #     print("WARNING: neptune-scale is not installed. Skipping Neptune logging.")
+        if not os.environ.get("NEPTUNE_API_TOKEN"):
+            print(
+                "WARNING: NEPTUNE_API_TOKEN environment variable not set. "
+                "Skipping Neptune logging. "
+            )
+        else:
+            loggers.append(
+                NeptuneLogger(
+                    project=wandb_project,
+                    config=config,
+                    log_dir=log_dir_path,
+                    neptune_name=wandb_name,
+                )
+            )
+
+    if wandb_project and _trackio_available:
+        loggers.append(
+            TrackioLogger(
+                project=wandb_project,
+                config=config,
+                log_dir=log_dir_path,
+                trackio_name=wandb_name,
+            )
+        )
+        print(f"Trackio logging enabled for project: {wandb_project}")
 
     # Create multiplex logger
     ml_logger = MultiplexLogger(loggers)

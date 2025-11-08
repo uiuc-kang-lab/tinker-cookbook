@@ -48,6 +48,16 @@ vector-search = [
 wandb = [
     "wandb",
 ]
+neptune-scale = [
+    "neptune-scale>=0.27.0",
+]
+trackio = [
+    "trackio<1.0.0",
+]
+verifiers = [
+    "verifiers",
+    "openai",
+]
 
 [build-system]
 requires = ["hatchling"]

@@ -148,9 +148,9 @@ def get_lr(model_name: str, is_lora: bool = True) -> float:
     lora_multiplier = 10.0
 
     lr = base_lr * lora_multiplier if is_lora else base_lr
-    if "llama" in model_name:
+    if "llama" in model_name.lower():
         exponent_model = 0.781
-    elif "qwen" in model_name:
+    elif "qwen" in model_name.lower():
         exponent_model = 0.0775
     else:
         assert False, f"Unknown model: {model_name}"

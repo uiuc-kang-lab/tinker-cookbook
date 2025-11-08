@@ -10,6 +10,7 @@ from tinker_cookbook.eval.evaluators import SamplingClientEvaluator
 from tinker_cookbook.rl.rollouts import do_group_rollout
 from tinker_cookbook.rl.types import EnvGroupBuilder, RLDataset, TrajectoryGroup
 from tinker_cookbook.utils.misc_utils import all_same, dict_mean
+from tinker_cookbook.utils import logtree
 
 
 def _compute_by_group_metrics(trajectory_groups_P: List[TrajectoryGroup], good_thresh: float = 0.5):
@@ -105,18 +106,36 @@ def dataset_to_env_group_builders(dataset: RLDataset) -> list[EnvGroupBuilder]:
 
 
 class RLTestSetEvaluator(SamplingClientEvaluator):
-    def __init__(self, dataset: RLDataset, max_tokens: int, dump_path: str | None = None):
+    def __init__(
+        self,
+        dataset: RLDataset,
+        max_tokens: int,
+        name: str | None = None,
+        num_groups_to_log: int = 4,
+        dump_path: str | None = None,
+    ):
+        self.env_group_builders_P = dataset_to_env_group_builders(dataset)
         self.max_tokens = max_tokens
+        self.name = name
+        self.num_groups_to_log = num_groups_to_log
         self.dump_path = dump_path
         if dump_path is not None and hasattr(dataset, "set_dump_path"):
             dataset.set_dump_path(dump_path)
-        self.env_group_builders_P = dataset_to_env_group_builders(dataset)
 
     async def __call__(self, sampling_client: tinker.SamplingClient) -> dict[str, float]:
         policy = TinkerTokenCompleter(sampling_client, max_tokens=self.max_tokens)
+
+        async def run_group_rollout(builder, i):
+            enable_logging = i < self.num_groups_to_log
+            with logtree.optional_enable_logging(enable=enable_logging):
+                return await do_group_rollout(builder, policy)
+
         trajectory_groups_P = await asyncio.gather(
-            *[do_group_rollout(builder, policy) for builder in self.env_group_builders_P]
+            *[run_group_rollout(builder, i) for i, builder in enumerate(self.env_group_builders_P)]
         )
         taglist_P = [builder.logging_tags() for builder in self.env_group_builders_P]
         metrics = compute_trajectory_metrics(trajectory_groups_P, taglist_P)
+
+        if self.name is not None:
+            metrics = {f"{self.name}/{k}": v for k, v in metrics.items()}
         return metrics
