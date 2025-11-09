@@ -1002,11 +1002,27 @@ async def do_sync_training(
                     for i, builder in enumerate(env_group_builders_P)
                 ],
             )
+        trajectory_groups_P = [
+            trajectory_group
+            for trajectory_group in trajectory_groups_P
+            if trajectory_group is not None
+        ]
 
-            # Log metrics
-            metrics.update(train_step_metrics)
-            metrics["time/total"] = time.time() - t_start
-            ml_logger.log_metrics(metrics, step=i_batch)
+        # Train step
+        sampling_client, train_step_metrics = await do_train_step_and_get_sampling_client(
+            cfg,
+            i_batch,
+            training_client,
+            service_client,
+            tokenizer,
+            env_group_builders_P,
+            trajectory_groups_P,
+        )
+
+        # Log metrics
+        metrics.update(train_step_metrics)
+        metrics["time/total"] = time.time() - t_start
+        ml_logger.log_metrics(metrics, step=i_batch)
 
 
 @scope

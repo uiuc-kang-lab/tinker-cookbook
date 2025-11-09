@@ -19,6 +19,7 @@ class CLIConfig:
     timeout: int = 30
     sampler_path: str
     test_data: str = "combined_test.parquet"
+    use_tool_call_template: str = "default"
 
 
 async def build_config(cli_config: CLIConfig) -> train.Config:
@@ -34,9 +35,11 @@ async def build_config(cli_config: CLIConfig) -> train.Config:
         data_path=f"{cli_config.data_path}/{cli_config.test_data}",
         db_modification_script_path=None,
         timeout=cli_config.timeout,
+        model_name=cli_config.model_name if cli_config.use_tool_call_template == "default" else "N/A",
         db_path=cli_config.db_path,
         split="test",
-        n_epochs=1
+        n_epochs=1,
+        dump_path=cli_config.output_path,
     )
 
     print("Creating service client...")

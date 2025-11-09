@@ -24,7 +24,7 @@ from tinker_cookbook.recipes.sql_rl.sql_utils import verify_format_and_extract, 
 from tinker_cookbook.recipes.sql_rl.grader import grade
 from tinker_cookbook import renderers
 from tinker_cookbook.rl.problem_env import ProblemGroupBuilder
-from tinker_cookbook.recipes.sql_rl.prompts import system_prompt, instruction_prompt, task_overview_prompt
+from tinker_cookbook.recipes.sql_rl.prompts import system_prompt, qwen_tool_calling, general_tool_calling
 from datasets import load_dataset, Dataset, concatenate_datasets
 from typing import Literal, cast, Tuple, Any
 from functools import partial
@@ -37,8 +37,14 @@ logger = logging.getLogger(__name__)
 
 MAX_TURNS = 5
 
-convo_prefix = [
-    Message(role="system", content=system_prompt),
+qwen_one_shot_prompt = [
+    Message(role="user", content="{db_details}: CREATE TABLE animals (\n`id` integer, -- ID of the animal.\n`species` text, -- species of the animal.\n`age` integer, -- age of the animal.\n`name` text, -- name of the animal.\nprimary key (id)\n);\n\n{external_knowledge}: pig is the species of.\n{question}: how many pigs are in the farm?"),
+    Message(role="assistant", content="I am querying how many pigs are in the farm. I will begin by checking if the 'animals' table exists and contains entries with species = 'pig'.\n<function_call>{\"name\": \"sql\", \"args\": {\"query\": \"SELECT COUNT(*) FROM animals WHERE species = 'pig';\"}}</function_call>"),
+    Message(role="user", content="+----------+\n| COUNT(*) |\n+----------+\n|   12     |\n+----------+\n"),
+    Message(role="assistant", content="The result indicates that there are 12 pigs in the farm. Since the question asks for how many pigs, I can now output the final SQL as the solution.\n<solution>SELECT COUNT(*) FROM animals WHERE species = 'pig';</solution>")
+]
+
+general_one_shot_prompt = [
     Message(role="user", content="{db_details}: CREATE TABLE animals (\n`id` integer, -- ID of the animal.\n`species` text, -- species of the animal.\n`age` integer, -- age of the animal.\n`name` text, -- name of the animal.\nprimary key (id)\n);\n\n{external_knowledge}: pig is the species of.\n{question}: how many pigs are in the farm?"),
     Message(role="assistant", content="I am querying how many pigs are in the farm. I will begin by checking if the 'animals' table exists and contains entries with species = 'pig'.\n<sql>SELECT COUNT(*) FROM animals WHERE species = 'pig';</sql>"),
     Message(role="user", content="+----------+\n| COUNT(*) |\n+----------+\n|   12     |\n+----------+\n"),
@@ -46,8 +52,9 @@ convo_prefix = [
 ]
 
 class SQLEnv(Env):
-    def __init__(self, question_id: str, question: str, gold_answer: int, grading_method: str, renderer: Renderer, db_file, timeout, db_modification_script: str | None, dump_path: str | None = None, use_convo_prefix: bool = True, use_system_prompt: bool = True, max_output_tokens_per_turn: int = 3072,
-    max_input_tokens: int = 32768):
+    def __init__(self, question_id: str, question: str, gold_answer: int, grading_method: str, renderer: Renderer, db_file, timeout, db_modification_script: str | None, dump_path: str | None = None, use_convo_prefix: bool = True, max_output_tokens_per_turn: int = 3072,
+    max_input_tokens: int = 32768, model_name: str = "qwen"):
+        
         self.renderer: Renderer = renderer
         self.turns: list[Message] = []
         self.gold_answer: int = gold_answer
@@ -60,9 +67,16 @@ class SQLEnv(Env):
         self.dump_path = dump_path
         self.grading_method = grading_method
         self.use_convo_prefix = use_convo_prefix
-        self.use_system_prompt = use_system_prompt
         self.max_output_tokens_per_turn = max_output_tokens_per_turn
         self.max_input_tokens = max_input_tokens
+        self.model_name = model_name
+
+        if "Qwen3" in self.model_name:
+            self.tool_calling_format = qwen_tool_calling
+            self.convo_prefix = qwen_one_shot_prompt
+        else:
+            self.tool_calling_format = general_tool_calling
+            self.convo_prefix = general_one_shot_prompt
 
     @property
     def stop_condition(self) -> StopCondition:
@@ -71,20 +85,25 @@ class SQLEnv(Env):
     @property
     def _obs(self) -> ModelInput:
         """Get the observation for the player in tokenized form"""
-        if self.use_convo_prefix and self.use_system_prompt:
-            convo = convo_prefix + [Message(role="assistant", content=self.question)] + self.turns
-        elif not self.use_convo_prefix and self.use_system_prompt:
-            convo = [Message(role="system", content=system_prompt), Message(role="assistant", content=self.question)] + self.turns
-        elif not self.use_system_prompt:
-            user_prompt = task_overview_prompt + instruction_prompt + self.question
-            convo = [Message(role="user", content=user_prompt)] + self.turns
-        # print(f"========== DEBUG ==========\n Current conversation turns: {[{'role': m["role"], 'content': m["content"]} for m in convo]}")
+        system_prompt_formatted = system_prompt.format(
+            tool_calling=self.tool_calling_format)
+
+        if self.use_convo_prefix:
+            convo = [Message(role="system", content=system_prompt_formatted)] + self.convo_prefix + [Message(role="assistant", content=self.question)] + self.turns
+        elif not self.use_convo_prefix:
+            convo = [Message(role="system", content=system_prompt_formatted), Message(role="assistant", content=self.question)] + self.turns
+
+        # if len(self.turns) > 0:
+        #     print(f"========== DEBUG: Current conversation turns ==========")
+        # for m in self.turns:
+        #     print(f"### {m['role']}\n{m['content']}")
+
         return self.renderer.build_generation_prompt(convo)
 
     async def initial_observation(self) -> tuple[ModelInput, StopCondition]:
         return self._obs, self.stop_condition
 
-    def _parse_action(self, action: str) -> Tuple[str, str, Any]:
+    def _parse_action_general(self, action: str) -> Tuple[str, str, Any]:
         """
         Parse action string to return tool name and corresponding arguments.
 
@@ -92,15 +111,38 @@ class SQLEnv(Env):
         """
         matches = re.findall(r"<sql>(.*?)</sql>", action, re.DOTALL)
         tool_input = matches[-1] if matches else None
-        return tool_input
+        return tool_input, None
+
+    def _parse_action_qwen(self, action: str) -> Tuple[str, str, Any]:
+        matches = re.findall(r"<function_call>(.*?)</function_call>", action, re.DOTALL)
+        tool_input = matches[-1] if matches else None
+        if tool_input is None:
+            return None, None
+        try:
+            tool_input_dict = eval(tool_input)
+            return tool_input_dict["args"]["query"], None
+        except Exception as e:
+            return None, str(e)
+
+    def _parse_action(self, action: str) -> Tuple[str, str|None]:
+        if "Qwen3" in self.model_name:
+            return self._parse_action_qwen(action)
+        else:
+            return self._parse_action_general(action)
 
     def _get_user_turn(self, action_text: str) -> tuple[Message, float, str]:
 
         # check if there is a sql tool call
-        if action_text.endswith('</sql>'):
+        if not action_text.endswith('</solution>'):
             # this means this turn is an intermediate step
-            sql = self._parse_action(action_text)
-            # print(f"Executing SQL: {sql}")
+            sql, error = self._parse_action(action_text)
+            if sql is None and error is None:
+                return Message(role="user", content="Your previous action is invalid. Follow the format of outputting a sql tool call or a final solution."), -1.0
+            elif sql is None and error is not None:
+                return Message(role="user", content=f"Your previous action is invalid due to error in parsing: {error}. Follow the format of outputting a sql tool call."), -1.0
+
+            assert sql is not None and error is None
+
             sql_output = execute_sql_wrapper_single(self.db_file, sql, self.timeout, action_text, self.db_modification_script)
             _, _, pred_results, error, _ = sql_output
             
@@ -134,6 +176,8 @@ class SQLEnv(Env):
             if self.dump_path is not None:
                 with open(os.path.join(self.dump_path, f"{self.question_id}_pred.sql"), "w") as f:
                     f.write(pred_sql)
+                with open(os.path.join(self.dump_path, f"{self.question_id}_question.txt"), "w") as f:
+                    f.write(self.question)
 
             pred = execute_sql_wrapper_single(self.db_file, pred_sql, self.timeout, action_text, self.db_modification_script)
             ref = execute_sql_wrapper_single(self.db_file, self.gold_answer, self.timeout, action_text, self.db_modification_script)
@@ -207,13 +251,14 @@ class BIRDDataset(RLDataset):
         db_path: str,
         db_modification_script_path: str,
         timeout: int,
+        model_name: str,
         split: Literal["train", "test"] = "train",
         n_epochs: int = 1,
         num_data: int = -1,
         use_convo_prefix: bool = True,
-        use_system_prompt: bool = True,
         max_output_tokens_per_turn: int = 3072,
         max_input_tokens: int = 32768,
+        dump_path: str | None = None,
     ):
         if split not in ("train", "test"):
             raise ValueError("split must be 'train' or 'test'")
@@ -225,17 +270,19 @@ class BIRDDataset(RLDataset):
                 self.ds = self.ds.select(range(num_data))
             if n_epochs > 1:
                 self.ds = concatenate_datasets([self.ds for _ in range(n_epochs)])
+        # print an example of data
+        print(f"Example data point: {self.ds[0]}")
         self.batch_size = batch_size
         self.group_size = group_size if split == "train" else 1
         self.renderer = renderer
         self.db_path = db_path
         self.timeout = timeout
         self.db_modification_script_path = db_modification_script_path
-        self.dump_path = None
-        self.use_system_prompt = use_system_prompt
+        self.dump_path = dump_path
         self.use_convo_prefix = use_convo_prefix
         self.max_output_tokens_per_turn = max_output_tokens_per_turn
         self.max_input_tokens = max_input_tokens
+        self.model_name = model_name
 
     @classmethod
     def question_suffix(cls) -> str:
@@ -276,7 +323,7 @@ class BIRDDataset(RLDataset):
             return None
         return ProblemGroupBuilder(
             env_thunk=partial(
-                SQLEnv, problem_id, problem, answer, grading_method, self.renderer, db_file, self.timeout, db_modification_script, self.dump_path, self.use_convo_prefix, self.use_system_prompt, self.max_output_tokens_per_turn, self.max_input_tokens
+                SQLEnv, problem_id, problem, answer, grading_method, self.renderer, db_file, self.timeout, db_modification_script, self.dump_path, self.use_convo_prefix, self.max_output_tokens_per_turn, self.max_input_tokens, self.model_name
             ),
             num_envs=group_size,
             dataset_name=dataset_name,
@@ -298,7 +345,6 @@ class BIRDDatasetBuilder(RLDatasetBuilder):
     n_epochs: int = 1
     num_data: int = -1
     use_convo_prefix: bool = True
-    use_system_prompt: bool = True
     max_output_tokens_per_turn: int = 3072
     max_input_tokens: int = 32768
 
@@ -336,10 +382,10 @@ class BIRDDatasetBuilder(RLDatasetBuilder):
             split="train",
             n_epochs=self.n_epochs,
             num_data=self.num_data,
-            use_system_prompt=self.use_system_prompt,
             use_convo_prefix=self.use_convo_prefix,
             max_output_tokens_per_turn=self.max_output_tokens_per_turn,
             max_input_tokens=self.max_input_tokens,
+            model_name=self.model_name
         )
         test_dataset = BIRDDataset(
             batch_size=self.batch_size,
@@ -351,10 +397,10 @@ class BIRDDatasetBuilder(RLDatasetBuilder):
             db_path=self.db_path,
             split="test",
             n_epochs=1,
-            use_system_prompt=self.use_system_prompt,
             use_convo_prefix=self.use_convo_prefix,
             max_output_tokens_per_turn=self.max_output_tokens_per_turn,
             max_input_tokens=self.max_input_tokens,
+            model_name=self.model_name
         )
         return training_dataset, test_dataset
 

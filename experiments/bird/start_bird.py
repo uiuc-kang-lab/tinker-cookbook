@@ -30,7 +30,6 @@ class CLIConfig:
     n_epochs: int = 1
     num_data: int = -1
     use_convo_prefix: bool = True
-    use_system_prompt: bool = True
     renderer_name: str = "default"
 
 
@@ -63,7 +62,6 @@ def build_config(cli_config: CLIConfig) -> train.Config:
         db_modification_script_path=cli_config.db_modification_script_path,
         num_data=cli_config.num_data,
         use_convo_prefix=cli_config.use_convo_prefix,
-        use_system_prompt=cli_config.use_system_prompt,
         max_output_tokens_per_turn=cli_config.max_output_tokens_per_turn,
     )
 
@@ -76,7 +74,6 @@ def build_config(cli_config: CLIConfig) -> train.Config:
         eval_every=cli_config.eval_every,
         wandb_project=cli_config.wandb_project,
         wandb_name=wandb_name,
-        n_epochs=1,
         save_every=cli_config.save_every,
         load_checkpoint_path=cli_config.checkpoint_path,
     )
