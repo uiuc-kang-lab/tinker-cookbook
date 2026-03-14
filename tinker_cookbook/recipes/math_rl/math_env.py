@@ -26,18 +26,22 @@ class MathEnv(ProblemEnv):
         convo_prefix: list[renderers.Message] | None = None,
         grader: Literal["sympy", "math_verify"] = "sympy",
         timeout: float = 1.0,
+        no_question_suffix: bool = False,
     ):
         super().__init__(renderer, convo_prefix)
         self.problem = problem
         self.answer = answer
         self.grader = grader
         self.timeout = timeout
+        self.no_question_suffix = no_question_suffix
 
     @classmethod
     def question_suffix(cls) -> str:
         return " Write your answer in \\boxed{} format."
 
     def get_question(self) -> str:
+        if self.no_question_suffix:
+            return self.problem
         return self.problem + self.question_suffix()
 
     def check_format(self, sample_str: str) -> bool:
@@ -71,7 +75,7 @@ class MathEnv(ProblemEnv):
         ]
 
 
-def safe_grade(given_answer: str, ground_truth: str, grader: str = "sympy", timeout: float = 1.0):
+def safe_grade(given_answer: str, ground_truth: str, grader: str = "sympy", timeout: float = 10.0):
     if grader == "sympy":
         grader_func = grade_answer
     elif grader == "math_verify":
@@ -320,6 +324,63 @@ class DeepMathDatasetBuilder(RLDatasetBuilder):
         ), None
 
 
+class EurusMathDataset(MathDataset):
+    def __init__(
+        self,
+        batch_size: int,
+        group_size: int,
+        renderer: renderers.Renderer,
+        convo_prefix: list[renderers.Message] | None = None,
+        seed: int = 0,
+    ):
+        # Don't call super().__init__ since we're overriding the dataset loading
+        self.ds = load_dataset("PRIME-RL/Eurus-2-RL-Data", split="train").shuffle(seed=seed)
+        # filter for ability = "math" just to be safe, since the dataset contains multiple abilities
+        self.ds = self.ds.filter(lambda x: x.get("ability") == "math")
+        self.batch_size = batch_size
+        self.group_size = group_size
+        self.renderer = renderer
+        self.convo_prefix = convo_prefix
+
+    def _make_env_group_builder(
+        self, x: dict, group_size: int
+    ) -> ProblemGroupBuilder | None:
+        # Extract problem and answer from the dataset
+        problem = x.get("prompt", [{"content": ""}])[-1].get("content", "")
+        answer = x.get("reward_model", {"ground_truth": ""}).get("ground_truth", "")
+        assert "Present the answer in LaTex format: \\boxed{Your answer}" in problem, problem
+        assert isinstance(answer, str) and answer != "", f"Expected answer to be a string, got {type(answer)}"
+        
+        if not (problem and answer):
+            return None
+
+        return ProblemGroupBuilder(
+            env_thunk=partial(
+                MathEnv, problem, answer, self.renderer, convo_prefix=self.convo_prefix, grader="sympy"
+            ),
+            num_envs=group_size,
+            dataset_name="eurus_math",
+        )
+
+
+@chz.chz
+class EurusMathDatasetBuilder(RLDatasetBuilder):
+    batch_size: int
+    model_name_for_tokenizer: str
+    renderer_name: str
+    group_size: int
+    seed: int = 0
+
+    async def __call__(self) -> tuple[EurusMathDataset, None]:
+        tokenizer = get_tokenizer(self.model_name_for_tokenizer)
+        return EurusMathDataset(
+            batch_size=self.batch_size,
+            group_size=self.group_size,
+            renderer=renderers.get_renderer(self.renderer_name, tokenizer=tokenizer),
+            seed=self.seed,
+        ), None
+
+
 class Gsm8kDataset(RLDataset):
     def __init__(
         self,
@@ -410,6 +471,7 @@ DATASET_BUILDER_MAP = {
     "polaris": PolarisDatasetBuilder,
     "deepmath": DeepMathDatasetBuilder,
     "gsm8k": Gsm8kDatasetBuilder,
+    "eurus_math": EurusMathDatasetBuilder,
 }
 
 

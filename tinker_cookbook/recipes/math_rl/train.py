@@ -86,7 +86,7 @@ def get_dataset_builder(
             include_fewshot=True,
             group_size=group_size,
         )
-    elif env in ["math", "polaris", "deepmath", "gsm8k"]:
+    elif env in ["math", "polaris", "deepmath", "gsm8k", "eurus_math"]:
         return math_env.get_math_dataset_builder(
             dataset_name=env,
             batch_size=batch_size,
