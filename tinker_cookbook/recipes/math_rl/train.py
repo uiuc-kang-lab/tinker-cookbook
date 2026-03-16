@@ -68,6 +68,9 @@ class CLIConfig:
 
     max_steps: int | None = None
 
+    # Number of passes over the training data. Only supported for eurus_math.
+    num_epochs: int = 1
+
 
 def get_dataset_builder(
     env: str,
@@ -76,6 +79,7 @@ def get_dataset_builder(
     renderer_name: str,
     group_size: int,
     seed: int = 0,
+    num_epochs: int = 1,
 ) -> RLDatasetBuilder:
     if env == "arithmetic":
         return arithmetic_env.ArithmeticDatasetBuilder(
@@ -94,6 +98,7 @@ def get_dataset_builder(
             renderer_name=renderer_name,
             group_size=group_size,
             seed=seed,
+            num_epochs=num_epochs,
         )
     else:
         raise ValueError(f"Unknown environment: {env}")
@@ -131,6 +136,7 @@ async def cli_main(cli_config: CLIConfig):
             renderer_name=renderer_name,
             group_size=cli_config.group_size,
             seed=cli_config.seed,
+            num_epochs=cli_config.num_epochs,
         ),
         model_name=cli_config.model_name,
         renderer_name=renderer_name,
@@ -156,6 +162,7 @@ async def cli_main(cli_config: CLIConfig):
         loss_fn=cli_config.loss_fn,
         loss_fn_config=cli_config.loss_fn_config,
         max_steps=cli_config.max_steps,
+        ttl_seconds=None
     )
 
     cli_utils.check_log_dir(log_path, behavior_if_exists=cli_config.behavior_if_log_dir_exists)

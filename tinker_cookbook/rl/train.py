@@ -114,6 +114,15 @@ def _sanitize_filename_component(text: str) -> str:
     return sanitized.strip("._") or "unnamed"
 
 
+def _checkpoint_name(i_batch: int, epoch_length: int | None) -> str:
+    """Return a checkpoint name that includes epoch/step info when epoch_length is known."""
+    if epoch_length is None:
+        return f"{i_batch:06d}"
+    epoch = i_batch // epoch_length
+    local_step = i_batch % epoch_length
+    return f"epoch_{epoch:04d}_step_{local_step:06d}"
+
+
 def _maybe_export_rollout_summary_jsonl(
     *,
     cfg: Config,
@@ -424,6 +433,11 @@ class Config:
     # Maximum number of training iterations. If None, train on the full dataset.
     max_steps: int | None = None
 
+    # Number of batches per epoch. Set automatically from the dataset when using a multi-epoch
+    # dataset; can also be set explicitly. Used to produce epoch-aware checkpoint names such as
+    # ``epoch_0002_step_000040`` instead of a flat global-step counter.
+    epoch_length: int | None = None
+
 
 @scope
 async def run_single_evaluation(
@@ -513,7 +527,8 @@ async def do_sync_training_with_stream_minibatch(
     """
     # Initial sampling client
     sampling_client, _ = await save_checkpoint_and_get_sampling_client(
-        training_client, start_batch, cfg.log_path, cfg.save_every, start_batch, cfg.ttl_seconds
+        training_client, start_batch, cfg.log_path, cfg.save_every, start_batch, cfg.ttl_seconds,
+        epoch_length=cfg.epoch_length,
     )
 
     for i_batch in range(start_batch, end_batch):
@@ -522,6 +537,9 @@ async def do_sync_training_with_stream_minibatch(
             "optim/lr": cfg.learning_rate,
             "progress/done_frac": (i_batch + 1) / num_batches,
         }
+        if cfg.epoch_length is not None:
+            metrics["progress/epoch"] = i_batch // cfg.epoch_length
+            metrics["progress/epoch_step"] = i_batch % cfg.epoch_length
         t_start = time.time()
 
         # Run evaluations
@@ -657,7 +675,7 @@ async def do_async_training(
     # Initial sampling client to use
     path_dict = await checkpoint_utils.save_checkpoint_async(
         training_client=training_client,
-        name=f"{start_batch:06d}",
+        name=_checkpoint_name(start_batch, cfg.epoch_length),
         log_path=cfg.log_path,
         loop_state={"batch": start_batch},
         kind="both",
@@ -765,6 +783,9 @@ async def do_async_training(
                 "optim/lr": cfg.learning_rate,
                 "progress/done_frac": (i_batch + 1) / num_batches,
             }
+            if cfg.epoch_length is not None:
+                metrics["progress/epoch"] = i_batch // cfg.epoch_length
+                metrics["progress/epoch_step"] = i_batch % cfg.epoch_length
             t_start = time.time()
 
             nonlocal sampling_client
@@ -898,13 +919,14 @@ async def save_checkpoint_and_get_sampling_client(
     save_every: int,
     start_batch: int = 0,
     ttl_seconds: int | None = None,
+    epoch_length: int | None = None,
 ) -> tuple[tinker.SamplingClient, dict[str, Any]]:
     metrics = {}
     with timed("save_checkpoint", metrics):
         if save_every > 0 and i_batch > start_batch and i_batch % save_every == 0:
             path_dict = await checkpoint_utils.save_checkpoint_async(
                 training_client=training_client,
-                name=f"{i_batch:06d}",
+                name=_checkpoint_name(i_batch, epoch_length),
                 log_path=log_path,
                 loop_state={"batch": i_batch},
                 kind="both",
@@ -964,6 +986,7 @@ async def compute_full_batch_metrics_and_get_sampling_client(
     save_every: int,
     do_compute_post_kl: bool,
     ttl_seconds: int | None = None,
+    epoch_length: int | None = None,
 ) -> tuple[tinker.SamplingClient, dict[str, Any]]:
     """
     At the end of the iteration, this will compute metrics for the full batch
@@ -981,7 +1004,8 @@ async def compute_full_batch_metrics_and_get_sampling_client(
 
     # Get a sampling client using the new weights
     sampling_client, checkpoint_metrics = await save_checkpoint_and_get_sampling_client(
-        training_client, i_batch, log_path, save_every, ttl_seconds=ttl_seconds
+        training_client, i_batch, log_path, save_every, ttl_seconds=ttl_seconds,
+        epoch_length=epoch_length,
     )
     metrics.update(checkpoint_metrics)
 
@@ -1118,6 +1142,7 @@ async def do_train_step_streaming_and_get_sampling_client(
         cfg.save_every,
         cfg.compute_post_kl,
         cfg.ttl_seconds,
+        epoch_length=cfg.epoch_length,
     )
     metrics.update(full_batch_metrics)
     return sampling_client, metrics, all_wrapped_trajectory_groups
@@ -1167,6 +1192,7 @@ async def do_train_step_and_get_sampling_client(
         cfg.save_every,
         cfg.compute_post_kl,
         cfg.ttl_seconds,
+        epoch_length=cfg.epoch_length,
     )
     metrics.update(full_batch_metrics)
 
@@ -1189,7 +1215,8 @@ async def do_sync_training(
     """Implements fully synchronous on-policy training"""
     # Initial sampling client
     sampling_client, _ = await save_checkpoint_and_get_sampling_client(
-        training_client, start_batch, cfg.log_path, cfg.save_every, start_batch, cfg.ttl_seconds
+        training_client, start_batch, cfg.log_path, cfg.save_every, start_batch, cfg.ttl_seconds,
+        epoch_length=cfg.epoch_length,
     )
 
     for i_batch in range(start_batch, end_batch):
@@ -1198,6 +1225,9 @@ async def do_sync_training(
             "optim/lr": cfg.learning_rate,
             "progress/done_frac": (i_batch + 1) / num_batches,
         }
+        if cfg.epoch_length is not None:
+            metrics["progress/epoch"] = i_batch // cfg.epoch_length
+            metrics["progress/epoch_step"] = i_batch % cfg.epoch_length
         t_start = time.time()
 
         # Run evaluations
@@ -1355,6 +1385,15 @@ async def main(
     evaluators = [evaluator() for evaluator in cfg.evaluator_builders]
     if maybe_test_dataset is not None:
         evaluators.append(RLTestSetEvaluator(maybe_test_dataset, max_tokens=cfg.max_tokens))
+
+    # Auto-detect epoch_length from the dataset when not explicitly configured.
+    # This enables epoch-aware checkpoint naming (e.g. epoch_0001_step_000040) for
+    # multi-epoch datasets without requiring the caller to hard-code the epoch length.
+    if cfg.epoch_length is None:
+        detected_epoch_length = dataset.epoch_length()
+        if detected_epoch_length is not None:
+            object.__setattr__(cfg, "epoch_length", detected_epoch_length)
+            logger.info(f"Auto-detected epoch_length={detected_epoch_length} from dataset")
 
     num_batches = len(dataset)
     end_batch = min(cfg.max_steps, num_batches) if cfg.max_steps is not None else num_batches

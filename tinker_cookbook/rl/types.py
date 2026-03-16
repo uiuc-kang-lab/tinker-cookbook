@@ -171,6 +171,10 @@ class RLDataset(ABC):
     def __len__(self) -> int:
         pass
 
+    def epoch_length(self) -> int | None:
+        """Number of batches in a single epoch, or None if the dataset is not multi-epoch."""
+        return None
+
 
 @chz.chz
 class RLDatasetBuilder:

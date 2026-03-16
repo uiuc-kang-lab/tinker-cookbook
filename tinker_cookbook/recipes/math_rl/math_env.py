@@ -332,6 +332,7 @@ class EurusMathDataset(MathDataset):
         renderer: renderers.Renderer,
         convo_prefix: list[renderers.Message] | None = None,
         seed: int = 0,
+        num_epochs: int = 1,
     ):
         # Don't call super().__init__ since we're overriding the dataset loading
         self.ds = load_dataset("PRIME-RL/Eurus-2-RL-Data", split="train").shuffle(seed=seed)
@@ -341,6 +342,18 @@ class EurusMathDataset(MathDataset):
         self.group_size = group_size
         self.renderer = renderer
         self.convo_prefix = convo_prefix
+        self.num_epochs = num_epochs
+        self._epoch_len = math.ceil(len(self.ds) / self.batch_size)
+
+    def get_batch(self, index: int) -> Sequence[EnvGroupBuilder]:
+        local_index = index % self._epoch_len
+        return super().get_batch(local_index)
+
+    def __len__(self) -> int:
+        return self._epoch_len * self.num_epochs
+
+    def epoch_length(self) -> int | None:
+        return self._epoch_len if self.num_epochs > 1 else None
 
     def _make_env_group_builder(
         self, x: dict, group_size: int
@@ -350,7 +363,7 @@ class EurusMathDataset(MathDataset):
         answer = x.get("reward_model", {"ground_truth": ""}).get("ground_truth", "")
         assert "Present the answer in LaTex format: \\boxed{Your answer}" in problem, problem
         assert isinstance(answer, str) and answer != "", f"Expected answer to be a string, got {type(answer)}"
-        
+
         if not (problem and answer):
             return None
 
@@ -370,6 +383,7 @@ class EurusMathDatasetBuilder(RLDatasetBuilder):
     renderer_name: str
     group_size: int
     seed: int = 0
+    num_epochs: int = 1
 
     async def __call__(self) -> tuple[EurusMathDataset, None]:
         tokenizer = get_tokenizer(self.model_name_for_tokenizer)
@@ -378,6 +392,7 @@ class EurusMathDatasetBuilder(RLDatasetBuilder):
             group_size=self.group_size,
             renderer=renderers.get_renderer(self.renderer_name, tokenizer=tokenizer),
             seed=self.seed,
+            num_epochs=self.num_epochs,
         ), None
 
 
@@ -482,16 +497,18 @@ def get_math_dataset_builder(
     renderer_name: str,
     group_size: int,
     seed: int = 0,
+    num_epochs: int = 1,
 ) -> RLDatasetBuilder:
     """
     Unified function to get any math dataset builder.
     Args:
-        dataset_name: One of "math", "polaris", "deepmath", or "gsm8k"
+        dataset_name: One of "math", "polaris", "deepmath", "gsm8k", or "eurus_math"
         batch_size: Number of groups per batch
         model_name_for_tokenizer: Model name for tokenizer
         renderer_name: Name of the renderer to use
         group_size: Number of environments per group
         seed: Random seed for data shuffling (default: 0)
+        num_epochs: Number of epochs to train over (only supported for eurus_math)
     Returns:
         The appropriate dataset builder instance
     """
@@ -502,10 +519,16 @@ def get_math_dataset_builder(
 
     builder_class = DATASET_BUILDER_MAP[dataset_name]
 
-    return builder_class(
+    kwargs: dict = dict(
         batch_size=batch_size,
         model_name_for_tokenizer=model_name_for_tokenizer,
         renderer_name=renderer_name,
         group_size=group_size,
         seed=seed,
     )
+    if dataset_name == "eurus_math":
+        kwargs["num_epochs"] = num_epochs
+    elif num_epochs != 1:
+        raise ValueError(f"num_epochs > 1 is only supported for eurus_math, not {dataset_name!r}")
+
+    return builder_class(**kwargs)
