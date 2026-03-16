@@ -10,4 +10,4 @@ uv run tinker_cookbook/recipes/math_rl/train.py  \
     num_epochs=10 \
     groups_per_batch=64 \
     wandb_project=rl_bounds \
-    wandb_name=eurus_math_qwen3_5_4b_r1 
+    wandb_name=eurus_math_qwen3_5_4b_r1 > eurus_math_qwen3_5_4b_r1.log 2>&1
