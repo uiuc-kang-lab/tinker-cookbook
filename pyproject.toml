@@ -31,6 +31,7 @@ dependencies = [
     "tqdm",
     "modal",
     "wandb>=0.25.1",
+    "dotenv>=0.9.9",
 ]
 
 [project.urls]

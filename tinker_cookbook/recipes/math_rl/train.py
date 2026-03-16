@@ -13,6 +13,10 @@ from tinker_cookbook.rl.train import AsyncConfig, Config, main
 from tinker_cookbook.rl.types import RLDatasetBuilder
 from tinker.types import LossFnType
 
+import dotenv
+dotenv.load_dotenv()
+
+
 logger = logging.getLogger(__name__)
 
 
