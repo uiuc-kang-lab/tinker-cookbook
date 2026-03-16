@@ -1,5 +1,3 @@
-export WANDB_API_KEY=aef54334e202ff36c30902c991926551953fb8bd
-
 uv run tinker_cookbook/recipes/math_rl/train.py  \
     base_url=http://localhost:8000 \
     model_name="Qwen/Qwen3.5-4B" \
