@@ -12,6 +12,7 @@ import pytest
 import tinker
 
 from tinker_cookbook.renderers import Message, RenderContext, get_renderer, get_text_content
+from tinker_cookbook.renderers.testing_utils import skip_deepseek_tokenizer_bug
 from tinker_cookbook.tokenizer_utils import get_tokenizer
 
 # =============================================================================
@@ -26,6 +27,8 @@ from tinker_cookbook.tokenizer_utils import get_tokenizer
         ("Qwen/Qwen3-30B-A3B-Instruct-2507", "qwen3_instruct"),
         ("Qwen/Qwen3.5-35B-A3B", "qwen3_5"),
         ("Qwen/Qwen3.5-35B-A3B", "qwen3_5_disable_thinking"),
+        ("nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16", "nemotron3"),
+        ("nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16", "nemotron3_disable_thinking"),
     ],
 )
 def test_qwen3_tool_response_rendering(model_name: str, renderer_name: str):
@@ -72,6 +75,8 @@ def test_qwen3_tool_response_rendering(model_name: str, renderer_name: str):
         ("Qwen/Qwen3-30B-A3B-Instruct-2507", "qwen3_instruct"),
         ("Qwen/Qwen3.5-35B-A3B", "qwen3_5"),
         ("Qwen/Qwen3.5-35B-A3B", "qwen3_5_disable_thinking"),
+        ("nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16", "nemotron3"),
+        ("nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16", "nemotron3_disable_thinking"),
     ],
 )
 def test_qwen3_parse_single_tool_call(model_name: str, renderer_name: str):
@@ -84,7 +89,7 @@ def test_qwen3_parse_single_tool_call(model_name: str, renderer_name: str):
 <tool_call>
 {"name": "search", "arguments": {"query": "weather in NYC"}}
 </tool_call><|im_end|>"""
-    if renderer_name.startswith("qwen3_5"):
+    if renderer_name.startswith("qwen3_5") or renderer_name.startswith("nemotron3"):
         response_text = """I'll search for that information.
 <tool_call>
 <function=search>
@@ -112,6 +117,7 @@ weather in NYC
     [
         ("Qwen/Qwen3-8B", "qwen3"),
         ("Qwen/Qwen3.5-35B-A3B", "qwen3_5"),
+        ("nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16", "nemotron3"),
     ],
 )
 def test_qwen3_parse_multiple_tool_calls(model_name: str, renderer_name: str):
@@ -130,7 +136,7 @@ def test_qwen3_parse_multiple_tool_calls(model_name: str, renderer_name: str):
 <tool_call>
 {"name": "get_weather", "arguments": {"location": "LA"}}
 </tool_call><|im_end|>"""
-    if renderer_name == "qwen3_5":
+    if renderer_name in ("qwen3_5", "nemotron3"):
         response_text = """I'll get the weather for both cities.
 <tool_call>
 <function=get_weather>
@@ -185,6 +191,7 @@ def test_kimi_k2_parse_tool_call():
     assert message["tool_calls"][0].id == "functions.search:0"
 
 
+@skip_deepseek_tokenizer_bug
 def test_deepseek_parse_tool_call():
     """Test parsing tool call from DeepSeek V3 response.
 
@@ -271,6 +278,7 @@ def test_qwen3_mixed_valid_invalid_tool_calls():
     assert "Invalid JSON" in message["unparsed_tool_calls"][0].error
 
 
+@skip_deepseek_tokenizer_bug
 def test_deepseek_parse_invalid_tool_call_json():
     """Test that invalid JSON in DeepSeek tool call is captured as unparsed."""
     model_name = "deepseek-ai/DeepSeek-V3.1"

@@ -2,8 +2,15 @@
 This module associates model names with metadata, which helps  training code choose good defaults.
 """
 
+from __future__ import annotations
+
+import logging
 from dataclasses import dataclass
 from functools import cache
+
+from tinker_cookbook.exceptions import ConfigurationError
+
+logger = logging.getLogger(__name__)
 
 # Common renderer tuples, defined once to reduce repetition.
 # Tuples (not lists) because these are shared across ModelAttributes instances
@@ -19,6 +26,7 @@ _DEEPSEEKV3 = ("deepseekv3", "deepseekv3_thinking")
 _GPT_OSS = ("gpt_oss_no_sysprompt", "gpt_oss_medium_reasoning")
 _KIMI_K2 = ("kimi_k2",)
 _KIMI_K25 = ("kimi_k25", "kimi_k25_disable_thinking")
+_NEMOTRON3 = ("nemotron3", "nemotron3_disable_thinking")
 
 
 @dataclass
@@ -106,6 +114,19 @@ def get_moonshot_info() -> dict[str, ModelAttributes]:
     }
 
 
+@cache
+def get_nvidia_info() -> dict[str, ModelAttributes]:
+    org = "nvidia"
+    return {
+        "NVIDIA-Nemotron-3-Nano-30B-A3B-BF16": ModelAttributes(
+            org, "3", "30B-A3B", True, _NEMOTRON3
+        ),
+        "NVIDIA-Nemotron-3-Super-120B-A12B-BF16": ModelAttributes(
+            org, "3", "120B-A12B", True, _NEMOTRON3
+        ),
+    }
+
+
 def get_model_attributes(model_name: str) -> ModelAttributes:
     model_name = model_name.split(":")[0]
     org, model_version_full = model_name.split("/")
@@ -120,8 +141,10 @@ def get_model_attributes(model_name: str) -> ModelAttributes:
         return get_gpt_oss_info()[model_version_full]
     elif org == "moonshotai":
         return get_moonshot_info()[model_version_full]
+    elif org == "nvidia":
+        return get_nvidia_info()[model_version_full]
     else:
-        raise ValueError(f"Unknown model: {model_name}")
+        raise ConfigurationError(f"Unknown model: {model_name}")
 
 
 def get_recommended_renderer_names(model_name: str) -> list[str]:
@@ -138,3 +161,29 @@ def get_recommended_renderer_name(model_name: str) -> str:
     Return the most recommended renderer for the model.
     """
     return get_recommended_renderer_names(model_name)[0]
+
+
+def warn_if_renderer_not_recommended(model_name: str, renderer_name: str | None) -> None:
+    """
+    Log a warning if ``renderer_name`` is not in the recommended list for ``model_name``.
+
+    Silently returns if ``renderer_name`` is None (caller is using the default) or if
+    ``model_name`` is not in the model registry.
+    """
+    if renderer_name is None:
+        return
+    try:
+        recommended = get_recommended_renderer_names(model_name)
+    except (ConfigurationError, KeyError, ValueError):
+        # Unknown model — nothing to validate against.
+        return
+    if renderer_name not in recommended:
+        logger.warning(
+            "Renderer %r is not recommended for model %r. "
+            "Recommended renderer(s): %s. "
+            "Using an incompatible renderer can silently degrade training quality "
+            "(e.g., prefilling tokens the model was never trained on).",
+            renderer_name,
+            model_name,
+            ", ".join(repr(r) for r in recommended),
+        )

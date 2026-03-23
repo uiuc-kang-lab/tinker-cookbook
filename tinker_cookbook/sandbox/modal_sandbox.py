@@ -14,13 +14,22 @@ See: https://modal.com/docs/guide/sandbox
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
 import shlex
 import uuid
 
-import modal
+try:
+    import modal
+except ImportError:
+    raise ImportError(
+        "modal is required for ModalSandbox. "
+        "Install it with: uv pip install 'tinker-cookbook[modal] @ "
+        "git+https://github.com/thinking-machines-lab/tinker-cookbook.git@nightly'"
+    ) from None
 
+from tinker_cookbook.exceptions import SandboxError
 from tinker_cookbook.sandbox.sandbox_interface import SandboxResult, SandboxTerminatedError
 
 logger = logging.getLogger(__name__)
@@ -181,6 +190,7 @@ class ModalSandbox:
                     proc.stdin.write(chunk.decode("utf-8", errors="replace"))
                 await proc.stdin.drain.aio()
             proc.stdin.write_eof()
+            await proc.stdin.drain.aio()
 
             stdout, stderr, exit_code = await asyncio.gather(
                 _read_stream_capped(proc.stdout, self._max_stream_output_bytes),
@@ -196,7 +206,8 @@ class ModalSandbox:
     async def cleanup(self) -> None:
         """Terminate the Modal sandbox and wait for it to fully shut down."""
         await self._sandbox.terminate.aio()
-        await self._sandbox.wait.aio(raise_on_termination=False)
+        with contextlib.suppress(modal.exception.SandboxTimeoutError):
+            await self._sandbox.wait.aio(raise_on_termination=False)
 
 
 class ModalSandboxPool:
@@ -285,7 +296,7 @@ class ModalSandboxPool:
             timeout: Execution timeout in seconds
         """
         if self._terminated:
-            raise RuntimeError("ModalSandboxPool has been terminated.")
+            raise SandboxError("ModalSandboxPool has been terminated.")
 
         sandbox = await self._warm_pool.get()
         self._active_count += 1

@@ -3,16 +3,20 @@
 import json
 import logging
 import os
+import shlex
+import sys
 from abc import ABC, abstractmethod
 from contextlib import contextmanager
 from dataclasses import asdict, is_dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any
 
 import chz
 from rich.console import Console
 from rich.table import Table
+
+from tinker_cookbook.exceptions import ConfigurationError
 from tinker_cookbook.utils.code_state import code_state
 
 logger = logging.getLogger(__name__)
@@ -82,7 +86,7 @@ class Logger(ABC):
         pass
 
     @abstractmethod
-    def log_metrics(self, metrics: Dict[str, Any], step: int | None = None) -> None:
+    def log_metrics(self, metrics: dict[str, Any], step: int | None = None) -> None:
         """Log metrics dictionary with optional step number."""
         pass
 
@@ -135,7 +139,7 @@ class JsonLogger(Logger):
                 f.write(diff_file)
             self._logged_hparams = True
 
-    def log_metrics(self, metrics: Dict[str, Any], step: int | None = None) -> None:
+    def log_metrics(self, metrics: dict[str, Any], step: int | None = None) -> None:
         """Append metrics to JSONL file."""
         log_entry = {"step": step} if step is not None else {}
         log_entry.update(metrics)
@@ -160,7 +164,7 @@ class PrettyPrintLogger(Logger):
             for key, value in config_dict.items():
                 self.console.print(f"  {key}: {_maybe_truncate_repr(value)}")
 
-    def log_metrics(self, metrics: Dict[str, Any], step: int | None = None) -> None:
+    def log_metrics(self, metrics: dict[str, Any], step: int | None = None) -> None:
         """Display metrics in console."""
         if not metrics:
             return
@@ -215,7 +219,7 @@ class WandbLogger(Logger):
             )
 
         if not os.environ.get("WANDB_API_KEY"):
-            raise ValueError("WANDB_API_KEY environment variable not set")
+            raise ConfigurationError("WANDB_API_KEY environment variable not set")
 
         # Initialize wandb run
         assert wandb is not None  # For type checker
@@ -231,7 +235,7 @@ class WandbLogger(Logger):
         if self.run and wandb is not None:
             wandb.config.update(dump_config(config))
 
-    def log_metrics(self, metrics: Dict[str, Any], step: int | None = None) -> None:
+    def log_metrics(self, metrics: dict[str, Any], step: int | None = None) -> None:
         """Log metrics to wandb."""
         if self.run and wandb is not None:
             wandb.log(metrics, step=step)
@@ -266,7 +270,7 @@ class NeptuneLogger(Logger):
             )
 
         if not os.environ.get("NEPTUNE_API_TOKEN"):
-            raise ValueError("NEPTUNE_API_TOKEN environment variable not set")
+            raise ConfigurationError("NEPTUNE_API_TOKEN environment variable not set")
 
         # Initialize neptune run
         assert NeptuneRun is not None  # For type checker
@@ -284,7 +288,7 @@ class NeptuneLogger(Logger):
 
     def log_metrics(
         self,
-        metrics: Dict[str, Any],
+        metrics: dict[str, Any],
         step: float | int | None = None,
     ) -> None:
         """Log metrics to neptune."""
@@ -327,7 +331,7 @@ class TrackioLogger(Logger):
         if self.run and trackio is not None:
             pass
 
-    def log_metrics(self, metrics: Dict[str, Any], step: int | None = None) -> None:
+    def log_metrics(self, metrics: dict[str, Any], step: int | None = None) -> None:
         """Log metrics to trackio."""
         if self.run and trackio is not None:
             trackio.log(metrics, step=step)
@@ -342,7 +346,7 @@ class TrackioLogger(Logger):
 class MultiplexLogger(Logger):
     """Logger that forwards operations to multiple child loggers."""
 
-    def __init__(self, loggers: List[Logger]):
+    def __init__(self, loggers: list[Logger]):
         self.loggers = loggers
 
     def log_hparams(self, config: Any) -> None:
@@ -350,7 +354,7 @@ class MultiplexLogger(Logger):
         for logger in self.loggers:
             logger.log_hparams(config)
 
-    def log_metrics(self, metrics: Dict[str, Any], step: int | None = None) -> None:
+    def log_metrics(self, metrics: dict[str, Any], step: int | None = None) -> None:
         """Forward log_metrics to all child loggers."""
         for logger in self.loggers:
             logger.log_metrics(metrics, step)
@@ -478,6 +482,13 @@ def setup_logging(
     return ml_logger
 
 
+def _get_command_line_invocation() -> str:
+    """Return the current command line in a shell-safe form."""
+    if not sys.argv:
+        return "<empty sys.argv>"
+    return shlex.join(sys.argv)
+
+
 def configure_logging_module(path: str, level: int = logging.INFO) -> logging.Logger:
     """Configure logging to console (color) and file (plain), forcing override of prior config."""
     # ANSI escape codes for colors
@@ -506,14 +517,17 @@ def configure_logging_module(path: str, level: int = logging.INFO) -> logging.Lo
     )
 
     # File handler without colors
-    file_handler = logging.FileHandler(path, encoding="utf-8")
+    file_handler = logging.FileHandler(path, mode="a", encoding="utf-8")
     file_handler.setFormatter(logging.Formatter("%(name)s:%(lineno)d [%(levelname)s] %(message)s"))
 
     # Force override like basicConfig(..., force=True)
     root = logging.getLogger()
     root.setLevel(level)
-    root.handlers.clear()
+    for handler in root.handlers[:]:
+        root.removeHandler(handler)
+        handler.close()
     root.addHandler(console_handler)
     root.addHandler(file_handler)
+    root.info("Command line invocation: %s", _get_command_line_invocation())
 
     return root

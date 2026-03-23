@@ -1,7 +1,9 @@
 import logging
-import os
 import shutil
+from pathlib import Path
 from typing import Literal
+
+from tinker_cookbook.exceptions import ConfigurationError
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +28,7 @@ def check_log_dir(log_dir: str, behavior_if_exists: LogdirBehavior):
     Returns:
         None
     """
-    if os.path.exists(log_dir):
+    if Path(log_dir).exists():
         if behavior_if_exists == "delete":
             logger.info(
                 f"Log directory {log_dir} already exists. Will delete it and start logging there."
@@ -51,7 +53,7 @@ def check_log_dir(log_dir: str, behavior_if_exists: LogdirBehavior):
         elif behavior_if_exists == "resume":
             return
         elif behavior_if_exists == "raise":
-            raise ValueError(f"Log directory {log_dir} already exists. Will not delete it.")
+            raise ConfigurationError(f"Log directory {log_dir} already exists. Will not delete it.")
         else:
             raise AssertionError(f"Invalid behavior_if_exists: {behavior_if_exists}")
     else:

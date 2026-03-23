@@ -12,15 +12,13 @@ import pickle
 import re
 import urllib.request
 from abc import ABC, abstractmethod
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import (
     Any,
-    Callable,
-    Iterator,
     Literal,
     NotRequired,
-    Optional,
     Protocol,
     TypedDict,
     Union,
@@ -31,6 +29,7 @@ import tinker
 import torch
 from PIL import Image
 
+from tinker_cookbook.exceptions import RendererError
 from tinker_cookbook.tokenizer_utils import Tokenizer
 
 logger = logging.getLogger(__name__)
@@ -244,7 +243,7 @@ class Utf8TokenDecoder:
 
         # Try to decode all pending tokens (common case)
         try:
-            text = self.tokenizer.decode(self._pending_tokens)
+            text = str(self.tokenizer.decode(self._pending_tokens))
             if self._is_valid_decode(text):
                 self._pending_tokens = []
                 return text
@@ -262,7 +261,7 @@ class Utf8TokenDecoder:
             if not prefix:
                 break
             try:
-                text = self.tokenizer.decode(prefix)
+                text = str(self.tokenizer.decode(prefix))
                 if self._is_valid_decode(text):
                     self._pending_tokens = self._pending_tokens[-remove:]
                     return text
@@ -281,7 +280,7 @@ class Utf8TokenDecoder:
         if not self._pending_tokens:
             return ""
         try:
-            text = self.tokenizer.decode(self._pending_tokens)
+            text = str(self.tokenizer.decode(self._pending_tokens))
         except Exception:
             # Last resort: decode with errors='replace' behavior
             # Most tokenizers handle this, but fall back to empty string
@@ -687,7 +686,7 @@ def ensure_text(content: Content) -> str:
         return content
     if len(content) == 1 and content[0]["type"] == "text":
         return content[0]["text"]
-    raise ValueError(f"Expected text content, got multimodal content with {len(content)} parts")
+    raise RendererError(f"Expected text content, got multimodal content with {len(content)} parts")
 
 
 def ensure_list(content: Content) -> list[ContentPart]:
@@ -715,7 +714,7 @@ def content_to_jsonable(content: Content) -> str | list[dict[str, Any]]:
                 image_part["image"] = image
             result.append(image_part)
         else:
-            raise ValueError(f"Unknown content part type: {part['type']}")
+            raise RendererError(f"Unknown content part type: {part['type']}")
     return result
 
 
@@ -785,7 +784,7 @@ def format_content_as_string(content: Content, separator: str = "\n") -> str:
         elif p["type"] == "text":
             parts.append(p["text"])
         else:
-            raise ValueError(f"Unknown content part type: {p['type']}")
+            raise RendererError(f"Unknown content part type: {p['type']}")
     return separator.join(parts)
 
 
@@ -1128,14 +1127,57 @@ class Renderer(ABC):
         """
         ...
 
+    supports_streaming: bool = False
+    """Whether this renderer supports streaming response parsing.
+
+    Renderers that set this to True get a default parse_response_streaming
+    implementation using ReasoningStreamingParser. They must also define
+    ``_end_message_token`` and ``_parse_response_for_streaming``.
+    """
+
+    def _normalize_response_tokens(self, response: list[int]) -> list[int]:
+        """Normalize sampled response tokens before parsing.
+
+        Subclasses that prefill tokens in build_generation_prompt (e.g. <think>)
+        should override this to restore the prefilled tokens so that parse_response
+        and parse_response_streaming see a complete token sequence.
+
+        The default implementation is the identity function.
+        """
+        return response
+
+    @property
+    def _end_message_token(self) -> int:
+        """The token ID that marks the end of a message.
+
+        Must be overridden by subclasses that set supports_streaming = True.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} must define _end_message_token to support streaming"
+        )
+
+    def _parse_response_for_streaming(self, response: list[int]) -> tuple[Message, bool]:
+        """Parse response for streaming, always applying full content parsing.
+
+        Unlike parse_response which may short-circuit on missing stop token,
+        this always parses content blocks from the response. This ensures
+        the final Message emitted by streaming is complete even for truncated
+        responses.
+
+        The default delegates to parse_response. Subclasses should override
+        if their parse_response short-circuits on missing stop token.
+        """
+        return self.parse_response(response)
+
     def parse_response_streaming(self, response: list[int]) -> Iterator[MessageDelta]:
         """Parse response tokens with streaming, yielding incremental deltas.
 
         This enables real-time display of model output by yielding partial
         content as tokens arrive, rather than waiting for the complete response.
 
-        Not all renderers support streaming. The default raises NotImplementedError.
-        Override this in subclasses that support streaming.
+        Renderers that set ``supports_streaming = True`` get a default
+        implementation using ReasoningStreamingParser. Others raise
+        NotImplementedError.
 
         Args:
             response: Token IDs from the model.
@@ -1146,9 +1188,19 @@ class Renderer(ABC):
             StreamingThinkingDelta: Incremental thinking/reasoning content.
             Message: The complete parsed message at the end.
         """
-        raise NotImplementedError(
-            f"{type(self).__name__} does not support streaming response parsing"
+        if not self.supports_streaming:
+            raise NotImplementedError(
+                f"{type(self).__name__} does not support streaming response parsing"
+            )
+        response = self._normalize_response_tokens(response)
+        parser = ReasoningStreamingParser(
+            tokenizer=self.tokenizer,
+            end_message_token=self._end_message_token,
+            parse_final_response=self._parse_response_for_streaming,
         )
+        for token in response:
+            yield from parser.feed(token)
+        yield from parser.finish()
 
     def to_openai_message(self, message: Message) -> dict:
         """
@@ -1200,7 +1252,7 @@ class Renderer(ABC):
             result["content"] = "".join(parts)
 
         # Handle tool_calls (convert ToolCall objects to OpenAI format)
-        if "tool_calls" in message and message["tool_calls"]:
+        if "tool_calls" in message and message["tool_calls"]:  # noqa: RUF019
             result["tool_calls"] = [
                 {
                     "type": "function",
@@ -1453,7 +1505,7 @@ class Renderer(ABC):
                 case TrainOnWhat.CUSTOMIZED:
                     output_has_weight = message.get("trainable", False)
                 case _:
-                    raise ValueError(f"Unknown train_on_what: {train_on_what}")
+                    raise RendererError(f"Unknown train_on_what: {train_on_what}")
 
             model_input_chunks_weights += [
                 (output_part, int(output_has_weight)) for output_part in output_parts if output_part
@@ -1496,14 +1548,14 @@ def parse_response_for_stop_token(
     """
     emt_count = response.count(stop_token)
     if emt_count == 0:
-        str_response = tokenizer.decode(response)
+        str_response = str(tokenizer.decode(response))
         logger.debug(f"Response is not a valid assistant response: {str_response}")
         return Message(role="assistant", content=str_response), False
     elif emt_count == 1:
-        str_response = tokenizer.decode(response[: response.index(stop_token)])
+        str_response = str(tokenizer.decode(response[: response.index(stop_token)]))
         return Message(role="assistant", content=str_response), True
     else:
-        raise ValueError(
+        raise RendererError(
             f"When parsing response, expected to split into 1 or 2 pieces using stop tokens, but got {emt_count}. "
             "You probably are using the wrong stop tokens when sampling"
         )
@@ -1517,7 +1569,7 @@ class ImageProcessorProtocol(Protocol):
     patch_size: int
 
     def get_number_of_image_patches(
-        self, height: int, width: int, images_kwargs: Optional[dict] = None
+        self, height: int, width: int, images_kwargs: dict | None = None
     ) -> int:
         raise NotImplementedError()
 
@@ -1543,7 +1595,7 @@ def image_to_chunk(
 
     # Validate the provided data is actually a valid image type
     else:
-        raise ValueError("The provided image must be a PIL.Image.Image, URL, or data URI.")
+        raise RendererError("The provided image must be a PIL.Image.Image, URL, or data URI.")
 
     # Convert to RGB if needed (JPEG doesn't support RGBA/LA/P modes)
     if pil_image.mode in ("RGBA", "LA", "P"):
@@ -1565,7 +1617,7 @@ def image_to_chunk(
         config = image_processor.get_resize_config({"type": "image", "image": pil_image})
         num_image_tokens = config["num_tokens"]
     else:
-        raise ValueError(
+        raise RendererError(
             f"Don't know how to get the number of image tokens for image processor: {image_processor}"
         )
 

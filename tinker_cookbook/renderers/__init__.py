@@ -8,6 +8,7 @@ Use viz_sft_dataset to visualize the output of different renderers. E.g.,
 from collections.abc import Callable
 from typing import Any
 
+from tinker_cookbook.exceptions import RendererError
 from tinker_cookbook.image_processing_utils import ImageProcessor
 
 # Types and utilities used by external code
@@ -117,6 +118,8 @@ def get_renderer(
             - "kimi_k2": Kimi K2 Thinking format
             - "kimi_k25": Kimi K2.5 with thinking enabled
             - "kimi_k25_disable_thinking": Kimi K2.5 with thinking disabled
+            - "nemotron3": Nemotron-3 with thinking enabled
+            - "nemotron3_disable_thinking": Nemotron-3 with thinking disabled
             - "gpt_oss_no_sysprompt": GPT-OSS without system prompt
             - "gpt_oss_low_reasoning": GPT-OSS with low reasoning
             - "gpt_oss_medium_reasoning": GPT-OSS with medium reasoning
@@ -153,6 +156,10 @@ def get_renderer(
     from tinker_cookbook.renderers.kimi_k2 import KimiK2Renderer
     from tinker_cookbook.renderers.kimi_k25 import KimiK25DisableThinkingRenderer, KimiK25Renderer
     from tinker_cookbook.renderers.llama3 import Llama3Renderer
+    from tinker_cookbook.renderers.nemotron3 import (
+        Nemotron3DisableThinkingRenderer,
+        Nemotron3Renderer,
+    )
     from tinker_cookbook.renderers.qwen3 import (
         Qwen3DisableThinkingRenderer,
         Qwen3InstructRenderer,
@@ -197,6 +204,10 @@ def get_renderer(
         renderer = KimiK25Renderer(tokenizer, image_processor=image_processor)
     elif name == "kimi_k25_disable_thinking":
         renderer = KimiK25DisableThinkingRenderer(tokenizer, image_processor=image_processor)
+    elif name == "nemotron3":
+        renderer = Nemotron3Renderer(tokenizer)
+    elif name == "nemotron3_disable_thinking":
+        renderer = Nemotron3DisableThinkingRenderer(tokenizer)
     elif name == "gpt_oss_no_sysprompt":
         renderer = GptOssRenderer(tokenizer, use_system_prompt=False)
     elif name == "gpt_oss_low_reasoning":
@@ -206,7 +217,7 @@ def get_renderer(
     elif name == "gpt_oss_high_reasoning":
         renderer = GptOssRenderer(tokenizer, use_system_prompt=True, reasoning_effort="high")
     else:
-        raise ValueError(
+        raise RendererError(
             f"Unknown renderer: {name}. If this is a custom renderer, please register it via register_renderer()."
         )
 

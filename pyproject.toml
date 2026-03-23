@@ -1,58 +1,69 @@
 [project]
 name = "tinker_cookbook"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Implementations of post-training algorithms using the Tinker API"
 readme = "README.md"
 authors = [
 { name = "Tinker authors", email = "tinker@thinkingmachines.ai" },
 ]
+license = "Apache-2.0"
 requires-python = ">=3.11"
 dependencies = [
+    "aiohttp",
+    "anyio",
+    "blobfile",
     "chz",
     "cloudpickle",
-    "datasets",
-    "numpy",
+    "datasets>=2.14.0",
+    "huggingface_hub",
+    "numpy>=1.24.0",
     "pillow",
+    "pydantic",
     "rich",
+    "safetensors",
     "termcolor",
-    "tinker>=0.9.0",
-    "torch",
-    "torchvision",
-    "transformers>=4.57.6,<5.0.0",
-    "blobfile",
-    "anyio",
-    "pylatexenc",
-    "sympy",
-    "textarena>=0.7.4",
-    "math-verify",
-    "scipy",
-    "pytest>=9.0.2",
     "tiktoken>=0.12.0", # Required for Kimi tokenizer
+    "tinker>=0.9.0",
+    "torch>=2.0",
     "tqdm",
     "modal",
     "wandb>=0.25.1",
     "dotenv>=0.9.9",
+    "transformers>=4.57.6,<=5.3.0",
 ]
 
 [project.urls]
 Homepage = "https://thinkingmachines.ai/tinker"
-Repository = "https://github.com/thinking-machines-lab/tinker"
+Repository = "https://github.com/thinking-machines-lab/tinker-cookbook"
 Documentation = "https://tinker-docs.thinkingmachines.ai/"
 
 [project.optional-dependencies]
 dev = [
     "pytest",
     "pytest-asyncio",
+    "pytest-timeout",
     "ruff",
     "pyright",
+]
+math-rl = [
+    "math-verify",
+    "pylatexenc",
+    "sympy",
+]
+modal = [
+    "modal",
+]
+multiplayer-rl = [
+    "textarena>=0.7.4",
 ]
 vector-search = [
     "chromadb",
     "google-genai",
-    "huggingface_hub"
+    "huggingface_hub",
 ]
 wandb = [
     "wandb",
+    "plotly",
 ]
 neptune-scale = [
     "neptune-scale>=0.27.0",
@@ -67,20 +78,33 @@ verifiers = [
 inspect = [
     "inspect-ai",
     "inspect-evals>=0.3.106",
-    "instruction-following-eval",
+]
+litellm = [
+    "litellm",
 ]
 all = [
+    "tinker_cookbook[math-rl]",
+    "tinker_cookbook[modal]",
+    "tinker_cookbook[multiplayer-rl]",
     "tinker_cookbook[vector-search]",
     "tinker_cookbook[wandb]",
     "tinker_cookbook[neptune-scale]",
     "tinker_cookbook[trackio]",
     "tinker_cookbook[verifiers]",
     "tinker_cookbook[inspect]",
+    "tinker_cookbook[litellm]",
 ]
 
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
+
+[tool.hatch.version]
+source = "vcs"
+tag-pattern = "v(?P<version>.*)"
+
+[tool.hatch.build.hooks.vcs]
+version-file = "tinker_cookbook/_version.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["tinker_cookbook"]
@@ -93,6 +117,8 @@ norecursedirs = ["tinker_cookbook/scripts"]
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
     "integration: marks tests requiring TINKER_API_KEY and network access",
+    "downstream_compat: marks tests that verify public API contracts for downstream consumers",
+    "timeout: per-test timeout in seconds (requires pytest-timeout)",
 ]
 
 [tool.ruff]
@@ -102,6 +128,38 @@ exclude = [
     "kimi-k2.5-hf-tokenizer/tool_declaration_ts.py",
 ]
 
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "F",    # pyflakes (unused imports, undefined names)
+    "I",    # isort (import sorting)
+    "UP",   # pyupgrade (modernize Python syntax)
+    "B",    # flake8-bugbear (common bugs and design problems)
+    "SIM",  # flake8-simplify (simplifiable code)
+    "RUF",  # Ruff-specific rules
+    "C4",   # flake8-comprehensions (unnecessary comprehensions)
+]
+ignore = [
+    "E501",   # line too long (handled by formatter)
+    "B028",   # no explicit stacklevel in warnings
+    "SIM108", # ternary operator (can reduce readability)
+    "UP007",  # use X | Y for union types (not always clearer)
+    "RUF001", # ambiguous unicode character in string (intentional in tokenizer code)
+    "RUF002", # ambiguous unicode character in docstring
+    "RUF003", # ambiguous unicode character in comment
+    "RUF005", # collection-literal-concatenation (stylistic, not a bug)
+    "RUF006", # asyncio-dangling-task (false positives with our patterns)
+    "RUF012", # mutable-class-default (conflicts with chz dataclass patterns)
+    "RUF046", # unnecessary-cast-to-int (explicit casts aid readability)
+    "B008",   # function-call-in-default-argument (to be fixed in a follow-up)
+    "B905",   # zip-without-explicit-strict (to be tightened in a follow-up)
+    "B023",   # function-uses-loop-variable (to be fixed in a follow-up)
+    "B027",   # empty-method-without-abstract-decorator (intentional in base classes)
+    "RUF059", # unused-unpacked-variable (to be fixed in a follow-up)
+    "SIM117", # multiple-with-statements (can reduce readability with context managers)
+    "RUF022", # unsorted-dunder-all (we group __all__ by category, not alphabetically)
+]
+
 [tool.pyright]
 include = ["tinker_cookbook"]
 exclude = [
@@ -109,6 +167,3 @@ exclude = [
     # Vendored from HuggingFace, kept identical to upstream
     "kimi-k2.5-hf-tokenizer/tool_declaration_ts.py",
 ]
-
-[tool.uv.sources]
-instruction-following-eval = { git = "https://github.com/josejg/instruction_following_eval", rev = "0c495b2f95155e8b10acb919ae283bfb4d5be6e2" }

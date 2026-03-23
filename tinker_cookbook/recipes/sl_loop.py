@@ -9,6 +9,7 @@ import time
 import chz
 import datasets
 import tinker
+
 from tinker_cookbook import checkpoint_utils, model_info, renderers
 from tinker_cookbook.supervised.common import compute_mean_nll
 from tinker_cookbook.supervised.data import conversation_to_datum
@@ -72,9 +73,9 @@ def main(config: Config):
     resume_info = checkpoint_utils.get_last_checkpoint(config.log_path)
     if resume_info:
         training_client = service_client.create_training_client_from_state_with_optimizer(
-            resume_info["state_path"]
+            resume_info.state_path
         )
-        start_batch = resume_info["batch"]
+        start_batch = resume_info.batch
         logger.info(f"Resuming from batch {start_batch}")
     else:
         training_client = service_client.create_lora_training_client(

@@ -6,18 +6,18 @@ and computing training metrics.
 """
 
 import asyncio
-from typing import Any, Dict, List, cast
+from typing import Any, cast
 
-import numpy as np
 import tinker
 import torch
+
+from tinker_cookbook.utils import trace
 from tinker_cookbook.utils.misc_utils import safezip
-from tinker_cookbook.utils.trace import scope
 
 
 def compute_kl_sample_train(
-    data_D: List[tinker.Datum], training_logprobs_D: List[torch.Tensor]
-) -> Dict[str, float]:
+    data_D: list[tinker.Datum], training_logprobs_D: list[torch.Tensor]
+) -> dict[str, float]:
     """Compute KL divergence metrics between sampling and training logprobs."""
     all_diffs: list[torch.Tensor] = []
     all_sampling_logprobs: list[torch.Tensor] = []
@@ -49,10 +49,10 @@ def compute_kl_sample_train(
     }
 
 
-@scope
+@trace.scope
 async def compute_post_kl(
-    data_D: List[tinker.Datum], post_sampling_client: tinker.SamplingClient
-) -> Dict[str, float]:
+    data_D: list[tinker.Datum], post_sampling_client: tinker.SamplingClient
+) -> dict[str, float]:
     """Compute post-update KL divergence metrics."""
     # Compute logprobs at all data items
     # This is a bit ugly, but we first reconstruct the original sequence from before we did the
@@ -83,13 +83,13 @@ async def compute_post_kl(
     return {"kl_pre_post_v1": kl_post_v1, "kl_pre_post_v2": kl_post_v2}
 
 
-@scope
+@trace.scope
 async def incorporate_kl_penalty(
-    data_D: List[tinker.Datum],
+    data_D: list[tinker.Datum],
     base_sampling_client: tinker.SamplingClient,
     kl_penalty_coef: float,
     kl_discount_factor: float,
-) -> Dict[str, float]:
+) -> dict[str, float]:
     """
     Compute KL against base model. Adjust advantages in-place by logp_base - logp_current - avg_kl,
     where avg_kl is the average of logp_base - logp_current (which is -KL[current, base])
@@ -120,9 +120,7 @@ async def incorporate_kl_penalty(
     for i, datum in enumerate(data_D):
         kl_advantages = kl_penalty_coef * float_masks[i] * (avg_logp_diff - logprob_diffs[i])
         if kl_discount_factor > 0:
-            kl_advantages = torch.tensor(
-                discounted_future_sum_vectorized(kl_advantages.numpy(), kl_discount_factor)
-            )
+            kl_advantages = discounted_future_sum_vectorized(kl_advantages, kl_discount_factor)
         datum.loss_fn_inputs["advantages"] = tinker.TensorData.from_torch(
             datum.loss_fn_inputs["advantages"].to_torch() + kl_advantages
         )
@@ -130,25 +128,29 @@ async def incorporate_kl_penalty(
     return {"kl_policy_base": float(avg_logp_diff)}
 
 
-def discounted_future_sum_vectorized(x: np.ndarray, gamma: float) -> np.ndarray:
+def discounted_future_sum_vectorized(x: torch.Tensor, gamma: float) -> torch.Tensor:
     """
-    Compute discounted sum of future values for each position using a vectorized approach.
+    Compute discounted sum of future values for each position.
+
+    For position i, computes: sum_{k=0}^{T-1-i} gamma^k * x[i+k]
 
     Args:
-        x (np.ndarray): 1D array of rewards.
-        gamma (float): Discount factor.
+        x: 1D tensor of values.
+        gamma: Discount factor.
 
     Returns:
-        np.ndarray: discounted sum of future values.
+        1D tensor of discounted future sums.
     """
-    # Reverse x so lfilter processes from end to start
-    import scipy.signal
-
-    return scipy.signal.lfilter([1], [1, -gamma], x[::-1], axis=0)[::-1].astype(x.dtype)  # type: ignore
+    result = torch.empty_like(x)
+    running = torch.zeros(1, dtype=x.dtype, device=x.device)
+    for t in range(len(x) - 1, -1, -1):
+        running = x[t] + gamma * running
+        result[t] = running
+    return result
 
 
 def compute_sampling_client_metrics(
-    wrapped_trajectory_groups: List[Any],  # WrappedTrajectoryGroup
+    wrapped_trajectory_groups: list[Any],  # WrappedTrajectoryGroup
 ) -> dict[str, Any]:
     """Compute metrics about sampling clients used to generate trajectory groups."""
     sampling_client_steps = [

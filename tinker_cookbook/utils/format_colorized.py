@@ -1,4 +1,5 @@
 from termcolor import colored
+
 from tinker_cookbook.tokenizer_utils import Tokenizer
 
 
@@ -22,7 +23,7 @@ def format_colorized(
     chunks, current_ids, current_color = [], [], None
 
     def flush_current_run():
-        decoded = tokenizer.decode(current_ids)
+        decoded = str(tokenizer.decode(current_ids))
         lines = decoded.splitlines(keepends=True)
         for line in lines:
             if draw_newline_arrow:

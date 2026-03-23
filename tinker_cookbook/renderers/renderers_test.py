@@ -26,7 +26,7 @@ import copy
 import json
 import random
 import uuid
-from typing import Callable, cast
+from collections.abc import Callable
 
 import pytest
 
@@ -49,7 +49,12 @@ from tinker_cookbook.renderers import (
 from tinker_cookbook.renderers.base import ContentPart, ensure_list, ensure_text
 from tinker_cookbook.renderers.kimi_k2 import KimiK2Renderer
 from tinker_cookbook.renderers.kimi_k25 import KimiK25Renderer
+from tinker_cookbook.renderers.nemotron3 import Nemotron3Renderer
 from tinker_cookbook.renderers.qwen3_5 import Qwen3_5DisableThinkingRenderer, Qwen3_5Renderer
+from tinker_cookbook.renderers.testing_utils import (
+    extract_token_ids,
+    skip_if_deepseek_tokenizer_bug,
+)
 from tinker_cookbook.tokenizer_utils import (
     get_registered_tokenizer_names,
     get_tokenizer,
@@ -57,7 +62,6 @@ from tinker_cookbook.tokenizer_utils import (
     register_tokenizer,
     unregister_tokenizer,
 )
-
 
 # =============================================================================
 # Conversation Generator (seeded random conversations for parametrized tests)
@@ -453,6 +457,7 @@ TOOL_CAPABLE_MODELS = {
     "meta-llama/Llama-3.2-1B-Instruct",
     "deepseek-ai/DeepSeek-V3.1",
     "moonshotai/Kimi-K2-Thinking",
+    "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16",
     "openai/gpt-oss-20b",
 }
 
@@ -478,6 +483,12 @@ _HF_TEST_MODELS = [
     ("Qwen/Qwen3-VL-30B-A3B-Instruct", None, {}),
     ("Qwen/Qwen3.5-35B-A3B", None, {}),
     ("Qwen/Qwen3.5-35B-A3B", "qwen3_5_disable_thinking", {"enable_thinking": False}),
+    ("nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16", None, {}),
+    (
+        "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16",
+        "nemotron3_disable_thinking",
+        {"enable_thinking": False},
+    ),
 ]
 
 # Models whose tool call format matches HF's apply_chat_template exactly.
@@ -491,6 +502,7 @@ _HF_TOOL_COMPATIBLE_MODELS = {
     "Qwen/Qwen3.5-35B-A3B",
     "deepseek-ai/DeepSeek-V3.1",
     "moonshotai/Kimi-K2-Thinking",
+    "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16",
 }
 
 # Conversations for generation tests (end with user message or tool response)
@@ -505,10 +517,7 @@ _GENERATION_CONVERSATIONS = [
 
 def _conversation_has_tools(messages: list[Message]) -> bool:
     """Check if a conversation contains tool calls or tool responses."""
-    for m in messages:
-        if "tool_calls" in m or m["role"] == "tool":
-            return True
-    return False
+    return any("tool_calls" in m or m["role"] == "tool" for m in messages)
 
 
 def _add_llama3_date_prefix(messages: list[Message]) -> list[Message]:
@@ -577,8 +586,7 @@ def test_generation_against_hf_chat_templates(
         hf_convo, tools=tools_for_hf, add_generation_prompt=True, tokenize=True, **hf_kwargs
     )
 
-    # Cast hf_tokens to list[int] for type checker - apply_chat_template with tokenize=True returns list[int]
-    hf_tokens_list = cast(list[int], hf_tokens)
+    hf_tokens_list = extract_token_ids(hf_tokens)
 
     assert cookbook_tokens == hf_tokens_list, (
         f"[{conv_desc}] Cookbook tokens: {cookbook_tokens}\n"
@@ -602,6 +610,12 @@ _SUPERVISED_TEST_MODELS = [
     ("Qwen/Qwen3-VL-30B-A3B-Instruct", None, {}),
     ("Qwen/Qwen3.5-35B-A3B", None, {}),
     ("Qwen/Qwen3.5-35B-A3B", "qwen3_5_disable_thinking", {"enable_thinking": False}),
+    ("nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16", None, {}),
+    (
+        "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16",
+        "nemotron3_disable_thinking",
+        {"enable_thinking": False},
+    ),
 ]
 
 # Conversations for supervised tests (end with assistant message)
@@ -739,6 +753,7 @@ def test_tokenization_boundary_with_whitespace(model_name: str):
         # Llama3 does not support tool calling - see llama3.py docstring
         "deepseek-ai/DeepSeek-V3.1",
         "moonshotai/Kimi-K2-Thinking",
+        "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16",
         "openai/gpt-oss-20b",
     ],
 )
@@ -748,6 +763,7 @@ def test_tool_call_supervised_rendering(model_name: str):
     Verifies that our renderers handle tool call conversations correctly
     for supervised learning.
     """
+    skip_if_deepseek_tokenizer_bug(model_name)
     convo = get_tool_call_conversation()
 
     tokenizer = get_tokenizer(model_name)
@@ -797,6 +813,7 @@ def test_tool_call_supervised_rendering(model_name: str):
         ("deepseek-ai/DeepSeek-V3.1", DeepSeekV3ThinkingRenderer),
         ("moonshotai/Kimi-K2-Thinking", KimiK2Renderer),
         ("moonshotai/Kimi-K2.5", KimiK25Renderer),
+        ("nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16", Nemotron3Renderer),
     ],
 )
 def test_strip_thinking_from_history_default(model_name: str, renderer_class):
@@ -804,6 +821,7 @@ def test_strip_thinking_from_history_default(model_name: str, renderer_class):
     Test that renderers with strip_thinking_from_history=True (default) only preserve
     the last assistant message's thinking. Earlier assistant thinking blocks are stripped.
     """
+    skip_if_deepseek_tokenizer_bug(model_name)
     tokenizer = get_tokenizer(model_name)
     renderer = renderer_class(tokenizer)  # Default strip_thinking_from_history=True
 
@@ -827,6 +845,7 @@ def test_strip_thinking_from_history_default(model_name: str, renderer_class):
         ("deepseek-ai/DeepSeek-V3.1", DeepSeekV3ThinkingRenderer),
         ("moonshotai/Kimi-K2-Thinking", KimiK2Renderer),
         ("moonshotai/Kimi-K2.5", KimiK25Renderer),
+        ("nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16", Nemotron3Renderer),
     ],
 )
 def test_strip_thinking_from_history_false(model_name: str, renderer_class):
@@ -834,6 +853,7 @@ def test_strip_thinking_from_history_false(model_name: str, renderer_class):
     Test that strip_thinking_from_history=False preserves thinking in ALL messages.
     This mode is used for multi-turn RL where the extension property is needed.
     """
+    skip_if_deepseek_tokenizer_bug(model_name)
     tokenizer = get_tokenizer(model_name)
     renderer = renderer_class(tokenizer, strip_thinking_from_history=False)
 
@@ -913,6 +933,8 @@ _CONSISTENCY_RENDERERS = [
     ("deepseek-ai/DeepSeek-V3.1", "deepseekv3_thinking"),
     ("openai/gpt-oss-20b", "gpt_oss_medium_reasoning"),
     ("moonshotai/Kimi-K2-Thinking", "kimi_k2"),
+    ("nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16", "nemotron3"),
+    ("nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16", "nemotron3_disable_thinking"),
 ]
 
 # Conversations for the consistency test
@@ -937,6 +959,7 @@ _RENDERERS_WITHOUT_TOOL_SUPPORT = {"role_colon"}
 _RENDERERS_WITH_THINKING_STRIPPING = {
     "qwen3_disable_thinking",
     "qwen3_5_disable_thinking",
+    "nemotron3_disable_thinking",
     "deepseekv3",
     "kimi_k2",
 }
@@ -944,7 +967,7 @@ _RENDERERS_WITH_THINKING_STRIPPING = {
 # Renderers where supervised and generation have different headers (HF thinking=True behavior).
 # These add </think> to supervised assistant headers but <think> to generation prompt,
 # so observation != generation_prompt by design.
-_RENDERERS_WITH_DIFFERENT_SUPERVISED_GEN_HEADERS = {"deepseekv3_thinking", "qwen3_5"}
+_RENDERERS_WITH_DIFFERENT_SUPERVISED_GEN_HEADERS = {"deepseekv3_thinking", "qwen3_5", "nemotron3"}
 
 
 @pytest.mark.parametrize("conversation_fn", _CONSISTENCY_CONVERSATIONS)
@@ -964,6 +987,7 @@ def test_supervised_generation_parse_consistency(
     - The observation tokens match what the model would see at generation time
     - The action tokens can be parsed back to the original message
     """
+    skip_if_deepseek_tokenizer_bug(model_name)
     tokenizer = get_tokenizer(model_name)
     renderer = get_renderer(renderer_name, tokenizer)
 
@@ -980,10 +1004,7 @@ def test_supervised_generation_parse_consistency(
         return False
 
     def has_tools(msgs):
-        for m in msgs:
-            if "tool_calls" in m or m["role"] == "tool":
-                return True
-        return False
+        return any("tool_calls" in m or m["role"] == "tool" for m in msgs)
 
     has_thinking_content = has_thinking(messages)
     has_tool_content = has_tools(messages)
@@ -1035,7 +1056,7 @@ def test_supervised_generation_parse_consistency(
         gen_decoded = tokenizer.decode(gen_tokens)
 
         # Show the discrepancy
-        assert False, (
+        raise AssertionError(
             f"Observation tokens do not match generation prompt for {renderer_name}.\n"
             f"Divergence at token {diverge_idx}:\n"
             f"  ob[{diverge_idx}:]:  {ob[diverge_idx : diverge_idx + 10]} = {tokenizer.decode(ob[diverge_idx : diverge_idx + 10])!r}\n"
@@ -1084,10 +1105,13 @@ def test_supervised_generation_parse_consistency(
         ("deepseek-ai/DeepSeek-V3.1", "deepseekv3_thinking"),
         ("openai/gpt-oss-20b", "gpt_oss_medium_reasoning"),
         ("moonshotai/Kimi-K2-Thinking", "kimi_k2"),
+        ("nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16", "nemotron3"),
+        ("nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16", "nemotron3_disable_thinking"),
     ],
 )
 def test_eot_parsing(model_name: str, renderer_name: str):
     """Test EOT token parsing behavior for different renderers using real tokenizers."""
+    skip_if_deepseek_tokenizer_bug(model_name)
     tokenizer = get_tokenizer(model_name)
     renderer = get_renderer(renderer_name, tokenizer)
 
@@ -1104,6 +1128,8 @@ def test_eot_parsing(model_name: str, renderer_name: str):
         "deepseekv3_disable_thinking": "<｜end▁of▁sentence｜>",  # Full-width pipes (alias)
         "gpt_oss_medium_reasoning": "<|return|>",
         "kimi_k2": "<|im_end|>",
+        "nemotron3": "<|im_end|>",
+        "nemotron3_disable_thinking": "<|im_end|>",
     }
     eot_token = eot_tokens.get(renderer_name)
     if eot_token is None:
@@ -1133,7 +1159,7 @@ def test_eot_parsing(model_name: str, renderer_name: str):
         test_response_double_eot, add_special_tokens=False
     )
 
-    with pytest.raises(ValueError, match="expected .* 1"):
+    with pytest.raises(ValueError, match=r"expected .* 1"):
         _ = renderer.parse_response(response_tokens_double_eot)
 
 

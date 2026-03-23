@@ -4,14 +4,15 @@ from datetime import datetime
 from typing import Any
 
 import chz
+from tinker.types import LossFnType
+
 from tinker_cookbook import checkpoint_utils, cli_utils
 from tinker_cookbook.recipes.math_rl import (
     arithmetic_env,
     math_env,
 )
-from tinker_cookbook.rl.train import AsyncConfig, Config, main
+from tinker_cookbook.rl.train import AsyncConfig, Config, StreamMinibatchConfig, main
 from tinker_cookbook.rl.types import RLDatasetBuilder
-from tinker.types import LossFnType
 
 import dotenv
 dotenv.load_dotenv()
@@ -64,6 +65,10 @@ class CLIConfig:
     behavior_if_log_dir_exists: cli_utils.LogdirBehavior = "ask"
 
     max_steps_off_policy: int | None = None
+
+    # Stream minibatch: train on minibatches as soon as they are ready
+    # instead of waiting for the full batch.
+    stream_minibatch_config: StreamMinibatchConfig | None = None
 
     # Loss function and configuration.
     # See https://tinker-docs.thinkingmachines.ai/losses
@@ -162,6 +167,12 @@ async def cli_main(cli_config: CLIConfig):
             groups_per_batch=cli_config.groups_per_batch,
         )
         if cli_config.max_steps_off_policy is not None
+        else None,
+        stream_minibatch_config=StreamMinibatchConfig(
+            groups_per_batch=cli_config.groups_per_batch,
+            num_minibatches=cli_config.stream_minibatch_config.num_minibatches,
+        )
+        if cli_config.stream_minibatch_config is not None
         else None,
         loss_fn=cli_config.loss_fn,
         loss_fn_config=cli_config.loss_fn_config,

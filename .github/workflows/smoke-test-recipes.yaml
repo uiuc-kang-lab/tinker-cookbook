@@ -14,6 +14,7 @@ jobs:
   # Discover all smoke test files so the matrix is auto-generated.
   # Adding a new test file in tests/ automatically adds a CI job.
   discover:
+    if: github.repository == 'thinking-machines-lab/tinker-cookbook'
     runs-on: ubuntu-latest
     outputs:
       tests: ${{ steps.find.outputs.tests }}
@@ -24,15 +25,16 @@ jobs:
       - name: find smoke tests
         id: find
         run: |
-          tests=$(find tests -maxdepth 1 -name 'test_*.py' -printf '%f\n' \
+          tests=$(find tests/recipes -maxdepth 1 -name 'test_*.py' -printf '%f\n' \
             | sed 's/\.py$//' \
             | jq -R -s -c 'split("\n") | map(select(length > 0))')
           echo "tests=$tests" >> "$GITHUB_OUTPUT"
 
   smoke-test:
+    if: github.repository == 'thinking-machines-lab/tinker-cookbook'
     needs: discover
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 35
 
     strategy:
       fail-fast: false
@@ -57,4 +59,4 @@ jobs:
         env:
           TINKER_API_KEY: ${{ secrets.TINKER_API_KEY }}
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
-        run: uv run pytest tests/${{ matrix.test }}.py -v -x -s
+        run: uv run pytest tests/recipes/${{ matrix.test }}.py -v -x -s

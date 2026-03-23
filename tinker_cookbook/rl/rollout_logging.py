@@ -1,12 +1,16 @@
 """Utilities for exporting per-rollout records to JSONL."""
 
 import json
+import logging
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any
 
 from tinker_cookbook.rl.types import TrajectoryGroup
 from tinker_cookbook.utils.misc_utils import safezip
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -40,7 +44,7 @@ def _json_safe(value: Any) -> Any:
         try:
             return value.item()
         except Exception:
-            pass
+            logger.debug("Failed to convert %r via .item(), falling back to str()", type(value))
     return str(value)
 
 

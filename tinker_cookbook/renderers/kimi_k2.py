@@ -3,16 +3,14 @@
 import json
 import re
 import warnings
-from typing import Iterator
 
 import tinker
 import torch
 
+from tinker_cookbook.exceptions import RendererError
 from tinker_cookbook.renderers.base import (
     ContentPart,
     Message,
-    MessageDelta,
-    ReasoningStreamingParser,
     RenderContext,
     RenderedMessage,
     Renderer,
@@ -99,6 +97,8 @@ class KimiK2Renderer(Renderer):
     prepended if no system message is provided. This ensures train-eval consistency when
     using HF's apply_chat_template for inference.
     """
+
+    supports_streaming = True
 
     DEFAULT_SYSTEM_PROMPT = "You are Kimi, an AI assistant created by Moonshot AI."
 
@@ -200,7 +200,7 @@ class KimiK2Renderer(Renderer):
             output_str += text_content
 
             # Handle tool calls
-            if "tool_calls" in message and message["tool_calls"]:
+            if "tool_calls" in message and message["tool_calls"]:  # noqa: RUF019
                 output_str += "<|tool_calls_section_begin|>"
                 for idx, tool_call in enumerate(message["tool_calls"]):
                     tool_id = tool_call.id
@@ -394,7 +394,7 @@ class KimiK2Renderer(Renderer):
                 case TrainOnWhat.CUSTOMIZED:
                     output_has_weight = message.get("trainable", False)
                 case _:
-                    raise ValueError(f"Unknown train_on_what: {train_on_what}")
+                    raise RendererError(f"Unknown train_on_what: {train_on_what}")
 
             model_input_chunks_weights += [
                 (output_part, int(output_has_weight)) for output_part in output_parts if output_part
@@ -416,6 +416,7 @@ class KimiK2Renderer(Renderer):
         return [self._end_message_token]
 
     def parse_response(self, response: list[int]) -> tuple[Message, bool]:
+        response = self._normalize_response_tokens(response)
         assistant_message, parse_success = parse_response_for_stop_token(
             response, self.tokenizer, self._end_message_token
         )
@@ -466,19 +467,6 @@ class KimiK2Renderer(Renderer):
 
         return message, parse_success
 
-    def parse_response_streaming(self, response: list[int]) -> Iterator[MessageDelta]:
-        """Parse response tokens with streaming, yielding incremental deltas."""
-        parser = ReasoningStreamingParser(
-            tokenizer=self.tokenizer,
-            end_message_token=self._end_message_token,
-            parse_final_response=self._parse_response_for_streaming,
-        )
-
-        for token in response:
-            yield from parser.feed(token)
-
-        yield from parser.finish()
-
     def to_openai_message(self, message: Message) -> dict:
         """Convert a Message to OpenAI API format with reasoning_content for thinking.
 
@@ -504,7 +492,7 @@ class KimiK2Renderer(Renderer):
                 result["reasoning_content"] = "".join(thinking_parts)
 
         # Handle tool_calls
-        if "tool_calls" in message and message["tool_calls"]:
+        if "tool_calls" in message and message["tool_calls"]:  # noqa: RUF019
             result["tool_calls"] = [
                 {
                     "type": "function",

@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import os
 import random
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Literal, Sequence, TypedDict, cast
+from typing import Literal, TypedDict, cast
 
 import chz
 import pandas as pd
@@ -100,7 +101,6 @@ def download_search_r1_dataset(split: Literal["train", "test"]) -> list[SearchR1
         filename=parquet_filename,
         repo_type="dataset",
         local_dir=tmp_download_dir,
-        local_dir_use_symlinks=False,
     )
 
     df_raw = pd.read_parquet(local_parquet_filepath)

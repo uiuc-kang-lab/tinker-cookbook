@@ -3,11 +3,13 @@ Basic interfaces and types for reinforcement learning.
 """
 
 from abc import ABC, abstractmethod
+from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Sequence, TypeAlias
+from typing import TypeAlias
 
 import chz
 import tinker
+
 from tinker_cookbook.completers import StopCondition, TokensWithLogprobs
 from tinker_cookbook.utils.misc_utils import safezip
 
@@ -80,6 +82,21 @@ class Trajectory:
     final_ob: Observation
 
 
+@dataclass(frozen=True)
+class RolloutError:
+    """A captured error from a failed trajectory rollout.
+
+    Stored on :class:`TrajectoryGroup` so error information flows through
+    return values (including across process boundaries via pickle) without
+    requiring shared mutable state.
+    """
+
+    error_type: str
+    """The exception class name, e.g. ``'BadRequestError'``."""
+    error_message: str
+    """``str(exception)`` — the human-readable error description."""
+
+
 class EnvGroupBuilder(ABC):
     """
     Builds a group of environments. The group will be used in the following way:
@@ -122,6 +139,19 @@ class EnvGroupBuilder(ABC):
         """
         return [(0.0, {}) for _ in trajectory_group]
 
+    async def cleanup(self) -> None:
+        """Clean up resources created by make_envs().
+
+        Called after rollouts and reward computation complete, regardless
+        of success or failure. Override this to release expensive resources
+        like cloud sandboxes, remote browsers, etc.
+
+        Default is a no-op. Implementations should be idempotent (safe to
+        call multiple times) and handle exceptions internally, as `do_group_rollout`
+        does not catch exceptions from this method.
+        """
+        pass
+
     def logging_tags(self) -> list[str]:
         """
         This is just used for logging. We often want to aggregate metrics (like rewards
@@ -144,6 +174,10 @@ class TrajectoryGroup:
     trajectories_G: list[Trajectory]
     final_rewards_G: list[float]  # computed by the EnvGroupBuilder, looking at whole group
     metrics_G: list[Metrics]
+
+    # Error tracking — populated by do_group_rollout when using error-tolerant strategies.
+    # Empty list means no trajectory errors occurred.
+    rollout_errors: list[RolloutError] = field(default_factory=list)
 
     def get_total_rewards(self) -> list[float]:
         """

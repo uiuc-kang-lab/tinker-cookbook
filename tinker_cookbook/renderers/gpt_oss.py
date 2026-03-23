@@ -8,6 +8,7 @@ from datetime import datetime
 import tinker
 import torch
 
+from tinker_cookbook.exceptions import RendererError
 from tinker_cookbook.renderers.base import (
     ContentPart,
     Message,
@@ -25,7 +26,6 @@ from tinker_cookbook.renderers.base import (
     ensure_text,
 )
 from tinker_cookbook.tokenizer_utils import Tokenizer
-
 
 # =============================================================================
 # TypeScript formatting utilities (stateless, used for Harmony tool definitions)
@@ -425,15 +425,15 @@ class GptOssRenderer(Renderer):
         call_count = response.count(self._call_token)
         return_count = response.count(self._return_token)
         if call_count == 0 and return_count == 0:
-            str_response = self.tokenizer.decode(response)
+            str_response = str(self.tokenizer.decode(response))
             return Message(role="assistant", content=str_response), False
         if call_count > 1:
-            raise ValueError(
+            raise RendererError(
                 f"When parsing response, expected at most 1 <|call|> token, but got {call_count}. "
                 "You probably are using the wrong stop tokens when sampling"
             )
         if return_count > 1:
-            raise ValueError(
+            raise RendererError(
                 f"When parsing response, expected at most 1 <|return|> token, but got {return_count}. "
                 "You probably are using the wrong stop tokens when sampling"
             )
@@ -445,7 +445,7 @@ class GptOssRenderer(Renderer):
                 stop_idx = call_idx
 
         assert stop_idx is not None
-        str_response = self.tokenizer.decode(response[:stop_idx])
+        str_response = str(self.tokenizer.decode(response[:stop_idx]))
         parts, tool_calls, unparsed = self._parse_harmony_output(str_response)
         content: list[ContentPart] | str = parts if parts else str_response
 
@@ -483,7 +483,7 @@ class GptOssRenderer(Renderer):
                 result["reasoning_content"] = "".join(thinking_parts)
 
         # Handle tool_calls
-        if "tool_calls" in message and message["tool_calls"]:
+        if "tool_calls" in message and message["tool_calls"]:  # noqa: RUF019
             result["tool_calls"] = [
                 {
                     "type": "function",
@@ -541,9 +541,7 @@ class GptOssRenderer(Renderer):
             channel = msg["channel"]
             if channel == "analysis":
                 parts.append(ThinkingPart(type="thinking", thinking=msg_content))
-            elif channel == "final":
-                parts.append(TextPart(type="text", text=msg_content))
-            elif channel == "commentary":
+            elif channel == "final" or channel == "commentary":
                 parts.append(TextPart(type="text", text=msg_content))
 
         return parts, tool_calls, unparsed
