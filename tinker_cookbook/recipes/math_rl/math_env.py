@@ -324,6 +324,35 @@ class DeepMathDatasetBuilder(RLDatasetBuilder):
         ), None
 
 
+class EurusMathEnv(MathEnv):
+    """MathEnv variant for the Eurus-2-RL-Data dataset.
+
+    Two behavioural differences from the base ``MathEnv``:
+
+    1. **No question suffix** — the Eurus prompt already ends with
+       ``"Present the answer in LaTex format: \\boxed{Your answer}"``.
+       ``no_question_suffix`` defaults to ``True`` here so the base class
+       never appends a second formatting instruction, regardless of how this
+       env is instantiated.
+
+    2. **Think-token stripping** — Eurus models produce ``<think>…</think>``
+       reasoning sections before their final answer.  SkyRL's ``MathEnv.step``
+       strips the thinking section before calling ``extract_answer``; we
+       replicate that here so grading ignores intermediate boxed expressions
+       inside the thinking block.
+    """
+
+    _THOUGHT_DELIMITER_END = "</think>"
+
+    def __init__(self, *args, no_question_suffix: bool = True, **kwargs):
+        super().__init__(*args, no_question_suffix=no_question_suffix, **kwargs)
+
+    def check_answer(self, sample_str: str) -> bool:
+        if self._THOUGHT_DELIMITER_END in sample_str:
+            sample_str = sample_str.split(self._THOUGHT_DELIMITER_END, 1)[1]
+        return super().check_answer(sample_str)
+
+
 class EurusMathDataset(MathDataset):
     def __init__(
         self,
@@ -369,7 +398,13 @@ class EurusMathDataset(MathDataset):
 
         return ProblemGroupBuilder(
             env_thunk=partial(
-                MathEnv, problem, answer, self.renderer, convo_prefix=self.convo_prefix, grader="sympy"
+                EurusMathEnv,
+                problem,
+                answer,
+                self.renderer,
+                convo_prefix=self.convo_prefix,
+                grader="sympy",
+                no_question_suffix=True,  # prompt already contains the boxed instruction
             ),
             num_envs=group_size,
             dataset_name="eurus_math",

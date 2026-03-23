@@ -389,7 +389,7 @@ def should_allow_eval(expr: str):
         if bad_string in expr:
             return False
 
-    return all(re.search(bad_regex, expr) is not None for bad_regex in BAD_REGEXES)
+    return all(re.search(bad_regex, expr) is None for bad_regex in BAD_REGEXES)
 
 
 def are_equal_under_sympy(ground_truth_normalized: str, given_normalized: str):
