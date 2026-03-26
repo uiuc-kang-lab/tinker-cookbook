@@ -639,6 +639,68 @@ class TestApplyMergeOp:
         assert gate_slots.abs().sum() == 0
         assert up_slots.abs().sum() > 0
 
+    def test_3d_transposed_concatenated_gate(self):
+        """Qwen3.5 layout: expert weights are (n, out, in) with fusing along dim 1."""
+        n_exp, out_dim, in_dim = 2, 4, 8
+        fused_out = out_dim * 2  # gate + up concatenated along dim 1
+        tensors = {"gate_up_proj": torch.zeros(n_exp, fused_out, in_dim)}
+        lora_A = torch.ones(n_exp, 1, in_dim) * 0.1
+        lora_B = torch.ones(n_exp, out_dim, 1)
+        op = MergeOp(
+            target_key="gate_up_proj",
+            lora_A=lora_A,
+            lora_B=lora_B,
+            is_expert_3d=True,
+            fused_proj_idx=0,
+            fused_proj_interleaved=False,
+            transpose_expert_delta=True,
+        )
+        apply_merge_op(tensors, op)
+        gate_half = tensors["gate_up_proj"][:, :out_dim, :]
+        up_half = tensors["gate_up_proj"][:, out_dim:, :]
+        assert gate_half.abs().sum() > 0
+        assert up_half.abs().sum() == 0
+
+    def test_3d_transposed_concatenated_up(self):
+        """Qwen3.5 layout: up projection goes into second half of dim 1."""
+        n_exp, out_dim, in_dim = 2, 4, 8
+        fused_out = out_dim * 2
+        tensors = {"gate_up_proj": torch.zeros(n_exp, fused_out, in_dim)}
+        lora_A = torch.ones(n_exp, 1, in_dim) * 0.2
+        lora_B = torch.ones(n_exp, out_dim, 1)
+        op = MergeOp(
+            target_key="gate_up_proj",
+            lora_A=lora_A,
+            lora_B=lora_B,
+            is_expert_3d=True,
+            fused_proj_idx=1,
+            fused_proj_interleaved=False,
+            transpose_expert_delta=True,
+        )
+        apply_merge_op(tensors, op)
+        gate_half = tensors["gate_up_proj"][:, :out_dim, :]
+        up_half = tensors["gate_up_proj"][:, out_dim:, :]
+        assert gate_half.abs().sum() == 0
+        assert up_half.abs().sum() > 0
+
+    def test_3d_transposed_non_fused(self):
+        """Qwen3.5 layout: non-fused expert (e.g. down_proj) with (n, out, in)."""
+        n_exp, out_dim, in_dim = 2, 8, 4
+        tensors = {"down_proj": torch.zeros(n_exp, out_dim, in_dim)}
+        lora_A = torch.ones(n_exp, 1, in_dim) * 0.5
+        lora_B = torch.ones(n_exp, out_dim, 1)
+        op = MergeOp(
+            target_key="down_proj",
+            lora_A=lora_A,
+            lora_B=lora_B,
+            is_expert_3d=True,
+            transpose_expert_delta=True,
+        )
+        apply_merge_op(tensors, op)
+        # delta = bmm(B, A) = (2, 8, 1) @ (2, 1, 4) = (2, 8, 4)
+        expected = torch.ones(n_exp, out_dim, in_dim) * 0.5
+        assert torch.allclose(tensors["down_proj"], expected)
+
     def test_shape_mismatch_raises(self):
         tensors = {"weight": torch.zeros(4, 4)}
         op = MergeOp(
@@ -727,6 +789,60 @@ class TestValidateMergeOpShapes:
             ]
         }
         shapes = {"down_proj": (2, 4, 8)}
+        validate_merge_op_shapes(ops, shapes)  # should not raise
+
+    def test_valid_3d_transposed_fused_passes(self):
+        """Qwen3.5 layout: (n, fused_out, in) with fusing along dim 1."""
+        ops = {
+            "gate_up_proj": [
+                MergeOp(
+                    target_key="gate_up_proj",
+                    lora_A=torch.ones(2, 1, 8),
+                    lora_B=torch.ones(2, 4, 1),
+                    is_expert_3d=True,
+                    fused_proj_idx=0,
+                    fused_proj_interleaved=False,
+                    transpose_expert_delta=True,
+                )
+            ]
+        }
+        # Target is (2, 8, 8) — fused along dim 1, each half is (2, 4, 8)
+        # Delta via bmm(B, A) is (2, 4, 8) which matches the half
+        shapes = {"gate_up_proj": (2, 8, 8)}
+        validate_merge_op_shapes(ops, shapes)  # should not raise
+
+    def test_invalid_3d_transposed_fused_shape_raises(self):
+        ops = {
+            "gate_up_proj": [
+                MergeOp(
+                    target_key="gate_up_proj",
+                    lora_A=torch.ones(2, 1, 8),
+                    lora_B=torch.ones(2, 6, 1),  # wrong out_dim
+                    is_expert_3d=True,
+                    fused_proj_idx=0,
+                    fused_proj_interleaved=False,
+                    transpose_expert_delta=True,
+                )
+            ]
+        }
+        shapes = {"gate_up_proj": (2, 8, 8)}  # half is (2, 4, 8), delta is (2, 6, 8)
+        with pytest.raises(WeightsMergeError, match=r"Shape mismatch.*gate_up_proj"):
+            validate_merge_op_shapes(ops, shapes)
+
+    def test_valid_3d_transposed_non_fused_passes(self):
+        ops = {
+            "down_proj": [
+                MergeOp(
+                    target_key="down_proj",
+                    lora_A=torch.ones(2, 1, 4),
+                    lora_B=torch.ones(2, 8, 1),
+                    is_expert_3d=True,
+                    fused_proj_idx=None,
+                    transpose_expert_delta=True,
+                )
+            ]
+        }
+        shapes = {"down_proj": (2, 8, 4)}
         validate_merge_op_shapes(ops, shapes)  # should not raise
 
 

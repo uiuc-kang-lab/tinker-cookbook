@@ -196,9 +196,22 @@ class MergeOp:
     Mutually exclusive with ``is_expert_3d`` — slice targeting is only
     supported for 2D ops."""
 
+    transpose_expert_delta: bool = False
+    """When True, expert weights use standard PyTorch ``(n, out, in)`` layout
+    instead of the ``(n, in, out)`` layout used by GPT-OSS.
+
+    Affects delta computation (``bmm(B, A)`` instead of ``bmm(A^T, B^T)``)
+    and fused projection slicing (along dim 1 instead of dim 2).
+
+    Currently applies to Qwen3.5 MoE models."""
+
     def __post_init__(self) -> None:
         if self.slice_start is not None and self.is_expert_3d:
             raise ValueError("slice_start is not supported for 3D expert ops")
+        if self.transpose_expert_delta and not self.is_expert_3d:
+            raise ValueError("transpose_expert_delta is only supported for 3D expert ops")
+        if self.transpose_expert_delta and self.fused_proj_interleaved:
+            raise ValueError("transpose_expert_delta is not supported with interleaved layout")
 
 
 # ---------------------------------------------------------------------------
@@ -329,21 +342,40 @@ def validate_merge_op_shapes(
         target_shape = model_shapes[target_key]
         for op in op_list:
             if op.is_expert_3d:
-                # bmm(A.T, B.T) → (num_experts, in_dim, out_dim)
                 n_exp, rank, in_dim = op.lora_A.shape
                 _, out_dim, _ = op.lora_B.shape
-                delta_shape = (n_exp, in_dim, out_dim)
 
-                if op.fused_proj_idx is not None:
-                    # Delta targets a slice of the fused tensor
-                    if op.fused_proj_interleaved:
-                        # Interleaved: target[:, :, idx::2] has shape (n, d, fused//2)
-                        expected = (target_shape[0], target_shape[1], target_shape[2] // 2)
+                if op.transpose_expert_delta:
+                    # bmm(B, A) → (num_experts, out_dim, in_dim)
+                    delta_shape = (n_exp, out_dim, in_dim)
+
+                    if op.fused_proj_idx is not None:
+                        # Concatenated along dim 1: target[:, start:start+half, :]
+                        expected = (target_shape[0], target_shape[1] // 2, target_shape[2])
                     else:
-                        # Concatenated: target[:, :, start:start+half] has shape (n, d, fused//2)
-                        expected = (target_shape[0], target_shape[1], target_shape[2] // 2)
+                        expected = target_shape
                 else:
-                    expected = target_shape
+                    # bmm(A.T, B.T) → (num_experts, in_dim, out_dim)
+                    delta_shape = (n_exp, in_dim, out_dim)
+
+                    if op.fused_proj_idx is not None:
+                        # Delta targets a slice of the fused tensor
+                        if op.fused_proj_interleaved:
+                            # Interleaved: target[:, :, idx::2] has shape (n, d, fused//2)
+                            expected = (
+                                target_shape[0],
+                                target_shape[1],
+                                target_shape[2] // 2,
+                            )
+                        else:
+                            # Concatenated: target[:, :, start:start+half]
+                            expected = (
+                                target_shape[0],
+                                target_shape[1],
+                                target_shape[2] // 2,
+                            )
+                    else:
+                        expected = target_shape
 
                 if delta_shape != expected:
                     raise WeightsMergeError(
@@ -389,20 +421,34 @@ def apply_merge_op(tensors: dict[str, torch.Tensor], op: MergeOp) -> None:
     target = tensors[op.target_key]
 
     if op.is_expert_3d:
-        # (num_experts, rank, in_dim), (num_experts, out_dim, rank)
-        # → (num_experts, in_dim, out_dim) via bmm of transposed
-        delta = torch.bmm(op.lora_A.transpose(-1, -2), op.lora_B.transpose(-1, -2))
+        if op.transpose_expert_delta:
+            # (num_experts, out_dim, rank) @ (num_experts, rank, in_dim)
+            # → (num_experts, out_dim, in_dim) — standard PyTorch (out, in) layout
+            delta = torch.bmm(op.lora_B, op.lora_A)
 
-        if op.fused_proj_idx is not None:
-            if op.fused_proj_interleaved:
-                target_view = target[:, :, op.fused_proj_idx :: 2]
-            else:
-                proj_width = target.shape[-1] // 2
+            if op.fused_proj_idx is not None:
+                # Fused along dim 1 (out dimension)
+                proj_width = target.shape[1] // 2
                 start = op.fused_proj_idx * proj_width
-                target_view = target[:, :, start : start + proj_width]
-            apply_merged_weight(target_view, delta)
+                target_view = target[:, start : start + proj_width, :]
+                apply_merged_weight(target_view, delta)
+            else:
+                apply_merged_weight(target, delta)
         else:
-            apply_merged_weight(target, delta)
+            # (num_experts, rank, in_dim), (num_experts, out_dim, rank)
+            # → (num_experts, in_dim, out_dim) via bmm of transposed
+            delta = torch.bmm(op.lora_A.transpose(-1, -2), op.lora_B.transpose(-1, -2))
+
+            if op.fused_proj_idx is not None:
+                if op.fused_proj_interleaved:
+                    target_view = target[:, :, op.fused_proj_idx :: 2]
+                else:
+                    proj_width = target.shape[-1] // 2
+                    start = op.fused_proj_idx * proj_width
+                    target_view = target[:, :, start : start + proj_width]
+                apply_merged_weight(target_view, delta)
+            else:
+                apply_merged_weight(target, delta)
     else:
         # 2D: standard linear or per-expert (already sliced during planning)
         delta = merge_lora_matrices(op.lora_A, op.lora_B)

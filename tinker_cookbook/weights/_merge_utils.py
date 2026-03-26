@@ -150,8 +150,15 @@ def plan_expert_ops(
     ops: dict[str, list[MergeOp]],
     is_fused: bool,
     is_interleaved: bool,
+    transpose_delta: bool = False,
 ) -> None:
-    """Plan merge ops for expert weights (separate or fused)."""
+    """Plan merge ops for expert weights (separate or fused).
+
+    Args:
+        transpose_delta: When True, produces deltas in ``(n, out, in)`` layout
+            (standard PyTorch convention) instead of ``(n, in, out)``. Used for
+            models like Qwen3.5 whose HF weights use the standard layout.
+    """
     if lora_A.ndim != 3 or lora_B.ndim != 3:
         raise WeightsMergeError(
             f"Expert LoRA weights must be 3D, got lora_A: {lora_A.shape}, lora_B: {lora_B.shape}"
@@ -204,5 +211,6 @@ def plan_expert_ops(
                 is_expert_3d=True,
                 fused_proj_idx=fused_proj_idx,
                 fused_proj_interleaved=is_interleaved,
+                transpose_expert_delta=transpose_delta,
             )
         )
