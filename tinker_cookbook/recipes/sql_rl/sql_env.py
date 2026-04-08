@@ -26,6 +26,8 @@ from tinker_cookbook.rl.message_env import EnvFromMessageEnv, MessageStepResult
 from tinker_cookbook.rl.types import Env, EnvGroupBuilder, RLDataset, RLDatasetBuilder
 from tinker_cookbook.tokenizer_utils import get_tokenizer
 from tinker_cookbook.tool_use.agent_tool_message_env import AgentToolMessageEnv
+from tinker_cookbook.utils import logtree
+from tinker_cookbook.utils.logtree_formatters import ConversationFormatter
 
 logger = logging.getLogger(__name__)
 
@@ -124,6 +126,20 @@ class SQLAgentMessageEnv(AgentToolMessageEnv):
         if done:
             reward, reward_metrics = await self.reward_fn(self.history)
             metrics.update(reward_metrics)
+
+            # Log the full conversation history for debugging / inspection.
+            with logtree.scope_header("Conversation"):
+                logtree.log_formatter(ConversationFormatter(messages=self.history))
+            with logtree.scope_header("Reward"):
+                logtree.table_from_dict(
+                    {
+                        "reward": f"{reward:.3f}",
+                        "turns": self._turn_count,
+                        "has_solution": has_solution,
+                        **{k: v for k, v in metrics.items()},
+                    },
+                    caption="Episode summary",
+                )
 
         return MessageStepResult(
             reward=reward,
