@@ -20,10 +20,12 @@ from datasets import load_dataset
 from tinker_cookbook import renderers
 from tinker_cookbook.recipes.sql_rl.sql_reward import make_sql_reward_fn
 from tinker_cookbook.recipes.sql_rl.sql_tool import SQLExecutorTools
-from tinker_cookbook.renderers.base import Message
+from tinker_cookbook.renderers.base import Message, ToolCall, get_text_content
+from tinker_cookbook.rl import types
+from tinker_cookbook.rl.message_env import EnvFromMessageEnv, MessageStepResult
 from tinker_cookbook.rl.types import Env, EnvGroupBuilder, RLDataset, RLDatasetBuilder
 from tinker_cookbook.tokenizer_utils import get_tokenizer
-from tinker_cookbook.tool_use import build_agent_tool_env
+from tinker_cookbook.tool_use.agent_tool_message_env import AgentToolMessageEnv
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +44,94 @@ def get_db_file(db_root: str, task: str, db_id: str) -> str:
             f"Unknown task type: {task!r}. Expected one of {list(DB_SUBPATH.keys())}"
         )
     return os.path.join(db_root, subpath, db_id, f"{db_id}.sqlite")
+
+
+# ---------------------------------------------------------------------------
+# MessageEnv (SkyRL-compatible episode termination)
+# ---------------------------------------------------------------------------
+
+INVALID_ACTION_MSG = (
+    "Your previous action is invalid. Follow the format of outputting "
+    "thinking process and sql tool, and try again."
+)
+
+
+class SQLAgentMessageEnv(AgentToolMessageEnv):
+    """SQL-specific agent env that matches SkyRL's episode termination.
+
+    Unlike the generic ``AgentToolMessageEnv`` which ends the episode whenever
+    the model produces no tool calls, this env only ends when:
+
+    * ``<solution>`` is found in the assistant message, **or**
+    * ``max_turns`` is reached, **or**
+    * a tool returns ``should_stop=True``.
+
+    When the model produces neither a tool call nor a ``<solution>``, an error
+    observation is appended and the episode **continues** — exactly matching
+    SkyRL's ``SQLEnv.step`` which always calls the tool (with ``sql=None``
+    when parsing fails) and feeds the error back to the model.
+    """
+
+    async def step(self, message: Message) -> MessageStepResult:
+        self._turn_count += 1
+        metrics: dict[str, float] = {}
+        logs: types.Logs = {}
+
+        self.history.append(message)
+
+        assistant_text = get_text_content(message) or ""
+        if assistant_text:
+            logs["assistant_content"] = assistant_text
+
+        tool_calls: list[ToolCall] = list(message.get("tool_calls") or [])
+        has_solution = "<solution>" in assistant_text and "</solution>" in assistant_text
+
+        if tool_calls:
+            # Normal path: execute tool calls
+            for i, tc in enumerate(tool_calls):
+                logs[f"tool_call_{i}"] = f"{tc.function.name}({tc.function.arguments})"
+            tool_result_messages = await self._handle_tool_calls(tool_calls)
+            for i, msg in enumerate(tool_result_messages):
+                logs[f"tool_result_{i}"] = get_text_content(msg)
+        elif not has_solution:
+            # SkyRL behaviour: no tool call *and* no <solution> → feed back
+            # an error observation so the model can retry.
+            turns_left = self.max_turns - self._turn_count
+            error_content = (
+                f"\n\n<observation>{INVALID_ACTION_MSG}\n"
+                f"<reminder>You have {turns_left} turns left to complete the task."
+                f"</reminder></observation>\n\n"
+            )
+            error_msg: Message = {
+                "role": "tool",
+                "content": error_content,
+                "tool_call_id": "",
+                "name": "execute_sql",
+            }
+            self.history.append(error_msg)
+            logs["tool_result_0"] = error_content
+            metrics["invalid_action"] = 1.0
+
+        max_turns_reached = self._turn_count >= self.max_turns
+        done = has_solution or max_turns_reached or self._should_stop
+
+        if max_turns_reached and not has_solution:
+            metrics["max_turns"] = 1.0
+        if self._should_stop:
+            metrics["tool_stopped"] = 1.0
+
+        reward = 0.0
+        if done:
+            reward, reward_metrics = await self.reward_fn(self.history)
+            metrics.update(reward_metrics)
+
+        return MessageStepResult(
+            reward=reward,
+            episode_done=done,
+            next_messages=self.history,
+            metrics=metrics,
+            logs=logs,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -91,15 +181,16 @@ class SQLEnvGroupBuilder(EnvGroupBuilder):
             # Use the prompt messages from the dataset directly. The system
             # message already contains tool specifications in the format
             # expected by the model (e.g. Qwen3.5 XML tool-call format).
-            initial_messages = list(self.prompt_messages)
-
+            msg_env = SQLAgentMessageEnv(
+                tools=[tool_instance.execute_sql],
+                initial_messages=list(self.prompt_messages),
+                max_turns=self.max_turns,
+                reward_fn=reward_fn,
+            )
             envs.append(
-                build_agent_tool_env(
+                EnvFromMessageEnv(
                     renderer=renderer,
-                    tools=[tool_instance.execute_sql],
-                    initial_messages=initial_messages,
-                    reward_fn=reward_fn,
-                    max_turns=self.max_turns,
+                    message_env=msg_env,
                     failed_parse_reward=-1.0,
                     max_trajectory_tokens=self.max_trajectory_tokens,
                 )
