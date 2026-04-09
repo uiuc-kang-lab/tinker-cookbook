@@ -10,18 +10,22 @@ Two evaluation methods are supported:
 - "assertions": assertion-based testing with test code strings (KodCode format)
 """
 
+import asyncio
 import math
 from collections.abc import Sequence
 from functools import partial
 
 import chz
+import tinker
 from datasets import Dataset, load_dataset
 
 from tinker_cookbook import renderers
 from tinker_cookbook.recipes.mix_code_rl.code_grading import compute_score, extract_code_from_model
 from tinker_cookbook.rl.problem_env import ProblemEnv, ProblemGroupBuilder, logger
-from tinker_cookbook.rl.types import EnvGroupBuilder, RLDataset, RLDatasetBuilder
+from tinker_cookbook.rl.types import EnvGroupBuilder, RLDataset, RLDatasetBuilder, Action, StepResult
 from tinker_cookbook.tokenizer_utils import get_tokenizer
+from tinker_cookbook.utils import logtree
+from tinker_cookbook.utils.logtree_formatters import ConversationFormatter
 
 
 # ---------------------------------------------------------------------------
@@ -67,6 +71,47 @@ class MixCodeEnv(ProblemEnv):
 
     def get_reference_answer(self) -> str:
         return f"[{self.method}] {self.ground_truth[:100]}..."
+
+    async def step(self, action: Action) -> StepResult:
+        """Override ProblemEnv.step to run check_answer in a thread.
+
+        compute_score() spawns subprocesses and calls p.join() which blocks.
+        Without asyncio.to_thread, this freezes the event loop and prevents
+        all other rollouts in the same group from making progress.
+        """
+        convo = self.convo_prefix + [{"role": "user", "content": self.get_question()}]
+        message, parse_success = self.renderer.parse_response(action)
+        content = renderers.get_text_content(message)
+        correct_format = float(parse_success) and float(self.check_format(content))
+        correct_answer = float(await asyncio.to_thread(self.check_answer, content))
+        total_reward = self.format_coef * (correct_format - 1) + correct_answer
+
+        with logtree.scope_header("Prompt"):
+            logtree.log_formatter(ConversationFormatter(messages=convo))
+        with logtree.scope_header("Policy Response"):
+            logtree.log_formatter(ConversationFormatter(messages=[message]))
+        with logtree.scope_header("Reward"):
+            logtree.table_from_dict(
+                {
+                    "reference_answer": self.get_reference_answer(),
+                    "format_valid": bool(correct_format),
+                    "correct": bool(correct_answer),
+                    "format_coef": self.format_coef,
+                    "reward": f"{total_reward:.3f}",
+                },
+                caption="Reward components",
+            )
+
+        return StepResult(
+            reward=total_reward,
+            episode_done=True,
+            next_observation=tinker.ModelInput.empty(),
+            next_stop_condition=self.stop_condition,
+            metrics={
+                "format": correct_format,
+                "correct": correct_answer,
+            },
+        )
 
 
 # ---------------------------------------------------------------------------
