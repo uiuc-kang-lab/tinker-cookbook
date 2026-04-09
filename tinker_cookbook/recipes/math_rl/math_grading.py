@@ -505,10 +505,13 @@ def grade_answer_math_verify(given_answer: str, ground_truth: str) -> bool:
     if not ground_truth.startswith("$") and not ground_truth.endswith("$"):
         ground_truth = f"${ground_truth}$"
 
-    given_answer_parsed = parse(given_answer)
-    ground_truth_parsed = parse(ground_truth)
+    # Disable parse()'s internal signal.alarm() timeout — it only works in the
+    # main thread and raises in ThreadPoolExecutor workers.  The caller
+    # (run_with_timeout_signal) already provides a thread-safe timeout.
+    given_answer_parsed = parse(given_answer, parsing_timeout=None)
+    ground_truth_parsed = parse(ground_truth, parsing_timeout=None)
 
-    is_correct = verify(given_answer_parsed, ground_truth_parsed)
+    is_correct = verify(given_answer_parsed, ground_truth_parsed, timeout_seconds=None)
 
     return is_correct
 
@@ -543,16 +546,19 @@ def run_with_timeout_signal(
     """
     if kwargs is None:
         kwargs = {}
-    with ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(func, *args, **kwargs)
-        try:
-            result = future.result(timeout=timeout_seconds)
-        except FuturesTimeoutError:
-            logger.warning(f"Function timed out after {timeout_seconds} seconds.")
-            result = None
-        except Exception as e:
-            # Handle other exceptions from the function if needed
-            logger.warning(f"Function raised an exception: {e}")
-            result = None  # Or re-raise
+    executor = ThreadPoolExecutor(max_workers=1)
+    future = executor.submit(func, *args, **kwargs)
+    try:
+        result = future.result(timeout=timeout_seconds)
+    except FuturesTimeoutError:
+        logger.warning(f"Function timed out after {timeout_seconds} seconds.")
+        result = None
+    except Exception as e:
+        logger.warning(f"Function raised an exception: {e}")
+        result = None
+    finally:
+        # shutdown(wait=False) so a stuck worker thread (e.g. math_verify.parse
+        # with parsing_timeout=None) is abandoned instead of blocking forever.
+        executor.shutdown(wait=False)
 
     return result
