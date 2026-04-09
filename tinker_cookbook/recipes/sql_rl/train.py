@@ -181,7 +181,7 @@ async def cli_main(cli_config: CLIConfig) -> None:
         loss_fn=cli_config.loss_fn,
         loss_fn_config=cli_config.loss_fn_config,
         max_steps=cli_config.max_steps,
-        ttl_seconds=None,
+        ttl_seconds=7*24*3600,  # 7 days, effectively no TTL for the duration of the experiment
     )
 
     cli_utils.check_log_dir(log_path, behavior_if_exists=cli_config.behavior_if_log_dir_exists)
