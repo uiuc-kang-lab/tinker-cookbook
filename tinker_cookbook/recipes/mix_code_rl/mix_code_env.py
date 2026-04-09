@@ -163,7 +163,16 @@ class MixCodeDatasetBuilder(RLDatasetBuilder):
         renderer = renderers.get_renderer(self.renderer_name, tokenizer=tokenizer)
 
         if self.dataset_path.endswith(".parquet"):
-            ds = Dataset.from_parquet(self.dataset_path)
+            import pyarrow as pa
+            import pyarrow.parquet as pq
+
+            # PyArrow 23's full-table read fails on nested columns (structs,
+            # lists of structs) with "Nested data conversions not implemented
+            # for chunked array outputs".  iter_batches() works because each
+            # batch is a single chunk; we read in batches and recombine.
+            pf = pq.ParquetFile(self.dataset_path)
+            table = pa.Table.from_batches(pf.iter_batches(batch_size=50_000))
+            ds = Dataset(table)
         else:
             ds = load_dataset(self.dataset_path, split="train")
 
