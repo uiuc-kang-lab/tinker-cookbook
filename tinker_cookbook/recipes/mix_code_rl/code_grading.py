@@ -10,6 +10,8 @@ Set the SKYRL_PATH environment variable to point to the SkyRL checkout.
 
 import os
 import sys
+import dotenv
+dotenv.load_dotenv()
 
 _skyrl_path = os.environ.get("SKYRL_PATH")
 if _skyrl_path is None:
