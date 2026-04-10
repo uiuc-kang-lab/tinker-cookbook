@@ -32,7 +32,7 @@ from tinker_cookbook.utils.logtree_formatters import ConversationFormatter
 logger = logging.getLogger(__name__)
 
 DB_SUBPATH: dict[str, str] = {
-    "synsql": "SynSQL-2.5M/databases",
+    "synsql": "",
     "spider": "spider/database",
     "bird": "bird/train/train_databases",
 }
