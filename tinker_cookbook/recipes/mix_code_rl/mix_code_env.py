@@ -64,7 +64,7 @@ class MixCodeEnv(ProblemEnv):
         return extract_code_from_model(sample_str) is not None
 
     def check_answer(self, sample_str: str) -> bool:
-        _, reward = compute_score(
+        _, reward, is_timeout = compute_score(
             sample_str, self.ground_truth, self.method, timeout=self.timeout,
         )
         return reward > 0
@@ -83,7 +83,9 @@ class MixCodeEnv(ProblemEnv):
         message, parse_success = self.renderer.parse_response(action)
         content = renderers.get_text_content(message)
         correct_format = float(parse_success) and float(self.check_format(content))
-        correct_answer = float(await asyncio.to_thread(self.check_answer, content))
+        correct_answer, is_timeout = await asyncio.to_thread(self.check_answer, content)
+        correct_answer = float(correct_answer)
+        is_timeout = float(is_timeout)
         total_reward = self.format_coef * (correct_format - 1) + correct_answer
 
         with logtree.scope_header("Prompt"):
@@ -98,6 +100,7 @@ class MixCodeEnv(ProblemEnv):
                     "correct": bool(correct_answer),
                     "format_coef": self.format_coef,
                     "reward": f"{total_reward:.3f}",
+                    "timeout": bool(is_timeout),
                 },
                 caption="Reward components",
             )
@@ -110,6 +113,7 @@ class MixCodeEnv(ProblemEnv):
             metrics={
                 "format": correct_format,
                 "correct": correct_answer,
+                "timeout": is_timeout,
             },
         )
 
