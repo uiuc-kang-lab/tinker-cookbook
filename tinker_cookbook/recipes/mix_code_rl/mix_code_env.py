@@ -67,7 +67,7 @@ class MixCodeEnv(ProblemEnv):
         _, reward, is_timeout = compute_score(
             sample_str, self.ground_truth, self.method, timeout=self.timeout,
         )
-        return reward > 0
+        return reward > 0, is_timeout
 
     def get_reference_answer(self) -> str:
         return f"[{self.method}] {self.ground_truth[:100]}..."
